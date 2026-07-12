@@ -45,6 +45,7 @@ jobs:
           PAGE_PASSWORD: ${{ secrets.PAGE_PASSWORD }}
         run: |
           npx -y staticrypt@3 out/index.html -d dist -p "$PAGE_PASSWORD" \
+            --short \
             --remember 365 \
             --template-title "Sector Rotation" \
             --template-instructions "パスワードを入力してください" \
