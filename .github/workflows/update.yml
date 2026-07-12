@@ -1,0 +1,62 @@
+name: update-dashboard
+
+on:
+  schedule:
+    # 平日 20:30 JST (= 11:30 UTC) に実行。J-Quantsの当日データ配信後。
+    - cron: "30 11 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch prices from J-Quants
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+        run: python fetch_data.py
+
+      - name: Build dashboard
+        run: python build_dashboard.py
+
+      - name: Encrypt page with password (StatiCrypt)
+        env:
+          PAGE_PASSWORD: ${{ secrets.PAGE_PASSWORD }}
+        run: |
+          npx -y staticrypt@3 out/index.html -d dist -p "$PAGE_PASSWORD" \
+            --remember 365 \
+            --template-title "Sector Rotation" \
+            --template-instructions "パスワードを入力してください" \
+            --template-button "開く" \
+            --template-placeholder "パスワード" \
+            --template-remember "このブラウザで記憶する"
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
