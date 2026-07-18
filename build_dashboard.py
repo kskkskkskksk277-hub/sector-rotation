@@ -107,6 +107,8 @@ def compute():
                   accel=accel_alert, decel=decel_alert)
     frames = {k: v.loc[keep] for k, v in frames.items()}
     series = {k: v.loc[keep] for k, v in series.items()}
+    # 累積相対強弱は表示開始日を0%に揃える（見た目の起点を明確に）
+    frames["rs"] = frames["rs"] - frames["rs"].iloc[0]
 
     mkt = mkt.loc[keep]
     for col in mkt.columns:
@@ -196,6 +198,19 @@ def build_figs(frames, series, labels):
         hovertemplate="%{y}<br>%{x|%Y-%m-%d}<br>フロー: %{z:.3f} %/日<extra></extra>"))
     f2.update_layout(xaxis=range_buttons(), height=500)
 
+    # --- 図2b: 資金フロー断面（地形図の各行を折れ線で抽出） ---
+    last_flow = flow.iloc[-1].abs().sort_values(ascending=False)
+    vis_flow = set(last_flow.index[:4])
+    f2b = go.Figure()
+    f2b.add_hline(y=0, line=dict(color="#9aa0a6", width=1))
+    for i, col in enumerate(flow.columns):
+        f2b.add_trace(go.Scatter(
+            x=flow.index, y=flow[col], name=labels[col],
+            line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+            visible=True if col in vis_flow else "legendonly",
+            hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>フロー: %{y:.3f} %/日<extra></extra>"))
+    f2b.update_layout(xaxis=range_buttons(), height=420)
+
     # --- 図3: 累積相対強弱 ---
     rs = frames["rs"]
     last = rs.iloc[-1].abs().sort_values(ascending=False)
@@ -209,13 +224,13 @@ def build_figs(frames, series, labels):
             hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>市場比: %{y:.1f}%<extra></extra>"))
     f3.update_layout(xaxis=range_buttons(), height=450)
 
-    for f in (f1, f2, f3):
+    for f in (f1, f2, f2b, f3):
         f.update_layout(
             template="plotly_white", font=dict(family="'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif", size=12),
             margin=dict(l=10, r=10, t=45, b=10),
             legend=dict(orientation="h", y=-0.12, font=dict(size=10)),
             hoverlabel=dict(font_size=12))
-    return f1, f2, f3
+    return f1, f2, f2b, f3
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -249,18 +264,30 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <details>
     <summary>この指標の読み方</summary>
     <ul>
-      <li><b>ローテーション指数</b>: 攻めのバスケット（半導体AI・銀行・商社など）と守りのバスケット（ディフェンシブ・通信）の資金フローの差。プラス圏＝リスクオン、マイナス圏＝リスクオフ。</li>
-      <li><b>ゼロクロス</b>: 攻守の入れ替わりのタイミング。<b>±σブレイク</b>: 偏りが普段の変動幅を超えた（行き過ぎ）サイン。</li>
+      <li><b>ローテーション指数</b>: 攻めのバスケット（半導体AI・銀行・商社など10分類）と守りのバスケット（ディフェンシブ・通信）の資金フローの差。プラス圏＝リスクオン、マイナス圏＝リスクオフ。</li>
+      <li><b>マーカーの意味</b>:
+        <ul style="margin:4px 0; padding-left:1.2em">
+          <li><span style="color:#2f9e44">●</span> <b>ゼロクロス↑</b>: 指数がマイナス→プラスに転換。守りから攻めへ資金が動き始めたサイン</li>
+          <li><span style="color:#d64550">●</span> <b>ゼロクロス↓</b>: プラス→マイナスに転換。攻めから守りへ退避が始まったサイン</li>
+          <li><span style="color:#3b6fd4">●</span> <b>+σブレイク</b>: リスクオンの偏りが普段の変動幅（±σ・灰色点線）を上抜け。過熱気味の警戒サイン</li>
+          <li><span style="color:#8a3ffc">●</span> <b>−σブレイク</b>: リスクオフ方向に行き過ぎ。悲観が極まっている（反発が近いことも）</li>
+          <li><span style="color:#2f9e44">▲</span> <b>加速アラート</b>: 指数の勢いが急に強まった（流れの初動を示唆）</li>
+          <li><span style="color:#d64550">▼</span> <b>減速アラート</b>: 勢いが急に衰えた（トレンド失速の初動を示唆）</li>
+        </ul>
+      </li>
       <li><b>日経平均・TOPIX（右軸）</b>: 実際の相場の値動き（表示開始日を100とした指数）。ローテーション指数がプラスなのに相場が下げている、といったズレを確認できます。右上のボタンでまとめて表示/非表示を切り替えられます。</li>
-      <li><b>地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
-      <li><b>累積相対強弱</b>: 市場平均に対する勝ち負けの積み上げ。右肩上がり＝市場より強い。</li>
+      <li><b>資金フロー地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）の強さ。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
+      <li><b>資金フロー断面図</b>: 地形図を横から見た図。各線は地形図の1行と同じデータで、線がプラス圏＝流入（地形図の赤）、マイナス圏＝流出（青）に対応します。</li>
+      <li><b>累積相対強弱</b>: 「市場平均」（12バスケットの平均リターン）に対する超過リターンの積み上げ。<b>グラフ左端（表示開始日）を0%</b>として、そこから市場にどれだけ勝った/負けたかを表します。右肩上がり＝市場より強い。資金フロー（地形図・断面図）はこのグラフの「傾き」にあたり、3つのグラフは同じ計算のつながりで対応しています。</li>
       <li>数値はすべて株価から計算した加工済みの独自指標です。</li>
     </ul>
   </details>
   <div class="card"><h2>ローテーション指数（＋＝リスクオン ／ −＝リスクオフ）</h2>
     <p class="note">細い線は日経平均・TOPIX（右軸・開始=100）。右上のボタンでまとめて表示/非表示</p>{fig1}</div>
   <div class="card"><h2>資金フロー地形図（赤＝流入・青＝流出）</h2>{fig2}</div>
-  <div class="card"><h2>累積相対強弱（市場平均に対する勝ち負け・%）</h2>
+  <div class="card"><h2>資金フロー断面図（地形図を横から見た図・%/日）</h2>
+    <p class="note">各線＝地形図の1行。プラス圏＝流入、マイナス圏＝流出。凡例タップでセクターを選択（初期表示は直近フローが大きい4つ）</p>{fig2b}</div>
+  <div class="card"><h2>累積相対強弱（市場平均比・表示開始日=0%）</h2>
     <p class="note">凡例タップで表示/非表示を切り替え（初期表示は直近の動きが大きい4つ）</p>{fig3}</div>
   <details>
     <summary>各セクターの採用銘柄一覧</summary>
@@ -288,16 +315,16 @@ def main() -> None:
     if not PRICES.exists():
         sys.exit("data/prices.parquet がありません。先に fetch_data.py を実行してください。")
     frames, series, labels = compute()
-    f1, f2, f3 = build_figs(frames, series, labels)
+    f1, f2, f2b, f3 = build_figs(frames, series, labels)
 
     cfg = {"responsive": True, "displaylogo": False,
            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
     parts = [f.to_html(full_html=False, include_plotlyjs=False, config=cfg)
-             for f in (f1, f2, f3)]
+             for f in (f1, f2, f2b, f3)]
 
     jst = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)
     html = HTML_TEMPLATE.format(updated=jst.strftime("%Y-%m-%d %H:%M JST"),
-                                fig1=parts[0], fig2=parts[1], fig3=parts[2],
+                                fig1=parts[0], fig2=parts[1], fig2b=parts[2], fig3=parts[3],
                                 baskets_html=baskets_table_html())
     OUT_DIR.mkdir(exist_ok=True)
     (OUT_DIR / "index.html").write_text(html, encoding="utf-8")
