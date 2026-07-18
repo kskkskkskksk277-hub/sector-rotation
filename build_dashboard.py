@@ -33,6 +33,7 @@ except Exception:
 
 ROOT = Path(__file__).resolve().parent
 PRICES = ROOT / "data" / "prices.parquet"
+INDICES = ROOT / "data" / "indices.parquet"
 OUT_DIR = ROOT / "out"
 
 # --- 計算パラメータ ---------------------------------------------------
@@ -91,6 +92,13 @@ def compute():
     accel_alert = (accel_s > ath) & (accel_s.shift() <= ath.shift())
     decel_alert = (accel_s < -ath) & (accel_s.shift() >= -ath.shift())
 
+    # --- 参考指数（TOPIX・日経平均）: 表示開始日=100として指数化 ---
+    if INDICES.exists():
+        mkt = pd.read_parquet(INDICES).set_index("Date").sort_index()
+        mkt = mkt.reindex(rel.index).ffill()
+    else:
+        mkt = pd.DataFrame(index=rel.index, columns=["TOPIX", "NIKKEI225"], dtype=float)
+
     # ウォームアップ期間を落とす
     keep = rel.index[WARMUP:]
     frames = dict(rs=rs, flow=flow)
@@ -99,6 +107,14 @@ def compute():
                   accel=accel_alert, decel=decel_alert)
     frames = {k: v.loc[keep] for k, v in frames.items()}
     series = {k: v.loc[keep] for k, v in series.items()}
+
+    mkt = mkt.loc[keep]
+    for col in mkt.columns:
+        base = mkt[col].dropna()
+        if not base.empty:
+            mkt[col] = mkt[col] / base.iloc[0] * 100.0
+    frames["mkt_idx"] = mkt
+
     return frames, series, labels
 
 
@@ -139,6 +155,21 @@ def build_figs(frames, series, labels):
     f1.add_trace(sig_trace(rot, series["decel"], "減速アラート", "triangle-down", "#d64550", 9))
     f1.update_layout(xaxis=range_buttons(), height=420)
 
+    # --- 図1b: 参考指数（TOPIX・日経平均、表示開始日=100の指数化） ---
+    mkt = frames["mkt_idx"]
+    f1b = go.Figure()
+    idx_names = {"TOPIX": "TOPIX", "NIKKEI225": "日経平均"}
+    idx_colors = {"TOPIX": PALETTE[0], "NIKKEI225": PALETTE[7]}
+    for col in ["NIKKEI225", "TOPIX"]:
+        if col not in mkt.columns or mkt[col].dropna().empty:
+            continue
+        f1b.add_trace(go.Scatter(
+            x=mkt.index, y=mkt[col], name=idx_names[col],
+            line=dict(color=idx_colors[col], width=2),
+            hovertemplate=idx_names[col] + "<br>%{x|%Y-%m-%d}<br>指数値: %{y:.1f}（開始日=100）<extra></extra>"))
+    f1b.add_hline(y=100, line=dict(color="#9aa0a6", width=1, dash="dot"))
+    f1b.update_layout(xaxis=range_buttons(), height=280)
+
     # --- 図2: 資金フロー地形図 ---
     flow = frames["flow"]
     z = gaussian_filter(flow.to_numpy().T, sigma=(HEAT_SIGMA_B, 0), mode="nearest")
@@ -165,13 +196,13 @@ def build_figs(frames, series, labels):
             hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>市場比: %{y:.1f}%<extra></extra>"))
     f3.update_layout(xaxis=range_buttons(), height=450)
 
-    for f in (f1, f2, f3):
+    for f in (f1, f1b, f2, f3):
         f.update_layout(
             template="plotly_white", font=dict(family="'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif", size=12),
             margin=dict(l=10, r=10, t=45, b=10),
             legend=dict(orientation="h", y=-0.12, font=dict(size=10)),
             hoverlabel=dict(font_size=12))
-    return f1, f2, f3
+    return f1, f1b, f2, f3
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -207,12 +238,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <ul>
       <li><b>ローテーション指数</b>: 攻めのバスケット（半導体AI・銀行・商社など）と守りのバスケット（ディフェンシブ・通信）の資金フローの差。プラス圏＝リスクオン、マイナス圏＝リスクオフ。</li>
       <li><b>ゼロクロス</b>: 攻守の入れ替わりのタイミング。<b>±σブレイク</b>: 偏りが普段の変動幅を超えた（行き過ぎ）サイン。</li>
+      <li><b>参考指数</b>: 日経平均・TOPIXの実際の値動き（表示開始日を100とした指数）。ローテーション指数がプラスなのに相場が下げている、といったズレを確認できます。</li>
       <li><b>地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
       <li><b>累積相対強弱</b>: 市場平均に対する勝ち負けの積み上げ。右肩上がり＝市場より強い。</li>
       <li>数値はすべて株価から計算した加工済みの独自指標です。</li>
     </ul>
   </details>
   <div class="card"><h2>ローテーション指数（＋＝リスクオン ／ −＝リスクオフ）</h2>{fig1}</div>
+  <div class="card"><h2>参考：日経平均・TOPIXの推移（表示開始日=100）</h2>
+    <p class="note">上のローテーション指数と同じ期間・横軸。実際の相場の方向感と見比べてください</p>{fig1b}</div>
   <div class="card"><h2>資金フロー地形図（赤＝流入・青＝流出）</h2>{fig2}</div>
   <div class="card"><h2>累積相対強弱（市場平均に対する勝ち負け・%）</h2>
     <p class="note">凡例タップで表示/非表示を切り替え（初期表示は直近の動きが大きい4つ）</p>{fig3}</div>
@@ -226,16 +260,16 @@ def main() -> None:
     if not PRICES.exists():
         sys.exit("data/prices.parquet がありません。先に fetch_data.py を実行してください。")
     frames, series, labels = compute()
-    f1, f2, f3 = build_figs(frames, series, labels)
+    f1, f1b, f2, f3 = build_figs(frames, series, labels)
 
     cfg = {"responsive": True, "displaylogo": False,
            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
     parts = [f.to_html(full_html=False, include_plotlyjs=False, config=cfg)
-             for f in (f1, f2, f3)]
+             for f in (f1, f1b, f2, f3)]
 
     jst = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)
     html = HTML_TEMPLATE.format(updated=jst.strftime("%Y-%m-%d %H:%M JST"),
-                                fig1=parts[0], fig2=parts[1], fig3=parts[2])
+                                fig1=parts[0], fig1b=parts[1], fig2=parts[2], fig3=parts[3])
     OUT_DIR.mkdir(exist_ok=True)
     (OUT_DIR / "index.html").write_text(html, encoding="utf-8")
     print(f"出力完了: {OUT_DIR / 'index.html'}（データ最終日: {series['rot'].index[-1]:%Y-%m-%d}）")

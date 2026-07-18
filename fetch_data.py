@@ -21,6 +21,7 @@ import time
 
 import pandas as pd
 import requests
+import yfinance as yf
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -31,6 +32,7 @@ API_BASE = "https://api.jquants.com/v2"
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 PRICES = DATA_DIR / "prices.parquet"
+INDICES = DATA_DIR / "indices.parquet"
 
 # 表示1.5年 + 指標計算のウォームアップ分を遡る（暦日）
 LOOKBACK_DAYS = 820
@@ -83,6 +85,52 @@ def fetch_code(s: requests.Session, code: str, frm: str, to: str) -> list[dict]:
         params["pagination_key"] = pk
 
 
+def fetch_topix(s: requests.Session, frm: str, to: str) -> pd.DataFrame:
+    """TOPIX: J-Quants専用エンドポイント（Lightプランで利用可）"""
+    params = {"from": frm, "to": to}
+    rows: list[dict] = []
+    while True:
+        r = s.get(API_BASE + "/indices/bars/daily/topix", params=params, timeout=120)
+        r.raise_for_status()
+        body = r.json()
+        rows.extend(body.get("data", []))
+        pk = body.get("pagination_key")
+        if not pk:
+            break
+        params["pagination_key"] = pk
+    df = pd.DataFrame(rows)[["Date", "C"]].rename(columns={"C": "TOPIX"})
+    df["Date"] = pd.to_datetime(df["Date"])
+    return df
+
+
+def fetch_nikkei225(frm: str, to: str) -> pd.DataFrame:
+    """日経平均: J-Quants Lightプランでは非対応（403）のため yfinance で代替"""
+    df = yf.download("^N225", start=frm, end=to, progress=False, auto_adjust=False)
+    if df.empty:
+        log("警告: 日経平均の取得に失敗しました（yfinance）。指数比較チャートから除外します。")
+        return pd.DataFrame(columns=["Date", "NIKKEI225"])
+    close = df["Close"]
+    if hasattr(close, "columns"):
+        close = close.iloc[:, 0]
+    out = close.reset_index()
+    out.columns = ["Date", "NIKKEI225"]
+    out["Date"] = pd.to_datetime(out["Date"]).dt.tz_localize(None)
+    return out
+
+
+def update_indices(frm_dt: dt.date, to_dt: dt.date, key: str) -> None:
+    s = requests.Session()
+    s.headers["x-api-key"] = key
+    frm, to = frm_dt.strftime("%Y%m%d"), to_dt.strftime("%Y%m%d")
+    log("TOPIXを取得します…")
+    topix = fetch_topix(s, frm, to)
+    log("日経平均を取得します（yfinance）…")
+    nikkei = fetch_nikkei225(frm_dt.isoformat(), (to_dt + dt.timedelta(days=1)).isoformat())
+    merged = topix.merge(nikkei, on="Date", how="outer").sort_values("Date")
+    merged.to_parquet(INDICES, index=False)
+    log(f"指数データ保存完了: {INDICES}（{len(merged)} 営業日）")
+
+
 def main() -> None:
     key = load_api_key()
     s = requests.Session()
@@ -117,6 +165,8 @@ def main() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     out.to_parquet(PRICES, index=False)
     log(f"保存完了: {PRICES}（{out['Code'].nunique()} 銘柄 × 約 {out['Date'].nunique()} 営業日）")
+
+    update_indices(today - dt.timedelta(days=LOOKBACK_DAYS), today, key)
 
 
 if __name__ == "__main__":
