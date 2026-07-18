@@ -1,6 +1,6 @@
 # 日経225 セクターローテーション ダッシュボード
 
-日経225の主要銘柄を12のテーマ別バスケットに分け、セクター間の資金循環を可視化する。
+日経225の全採用銘柄（225銘柄）を21のテーマ別バスケットに分け、セクター間の資金循環を可視化する。
 毎営業日の夜に GitHub Actions が自動でデータ取得→ページ更新し、GitHub Pages で公開される
 （StatiCrypt によるパスワード保護付き）。
 
@@ -8,10 +8,15 @@
 
 | ファイル | 役割 |
 |---|---|
-| `baskets.json` | バスケット定義（銘柄の追加・入れ替えはここを編集するだけ） |
+| `baskets.json` | バスケット定義（手編集も可。通常は下の2スクリプトで再生成） |
+| `fetch_members.py` | 日経公式サイトから採用225銘柄と業種を取得 → `data/nikkei225_members.json` |
+| `make_baskets.py` | 採用銘柄リストを21バスケットに振り分け → `baskets.json`（テーマの上書きは OVERRIDE を編集） |
 | `fetch_data.py` | J-Quants API V2 から全銘柄の日足を取得 → `data/prices.parquet` |
 | `build_dashboard.py` | 指標計算 + Plotly ダッシュボード生成 → `out/index.html` |
 | `.github/workflows/update.yml` | 毎営業日 20:30 JST に自動実行（取得→生成→暗号化→公開） |
+
+日経平均の銘柄入れ替え（4月・10月の定期見直しなど）の後は
+`python fetch_members.py && python make_baskets.py` を実行して push すれば反映される。
 
 ## 指標の定義
 
@@ -46,4 +51,4 @@ python build_dashboard.py
 
 - J-Quants の生データ（株価そのもの）はリポジトリにコミットしない・ページに載せない
   （利用規約の再配布禁止に配慮。公開するのは加工済みの独自指標のみ）
-- 日経225の銘柄入れ替えや新テーマ追加時は `baskets.json` を編集して push すれば反映される
+- 日経225の銘柄入れ替えは `fetch_members.py` → `make_baskets.py`、テーマの組み替えは `make_baskets.py` の OVERRIDE 編集で対応

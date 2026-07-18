@@ -43,9 +43,17 @@ SIGMA_WINDOW = 120      # ±σバンドを測る期間（営業日）
 WARMUP = 60             # 表示から捨てる先頭期間（平滑化が安定するまで）
 ACCEL_TH = 1.2          # 加速/減速シグナルのしきい値（σ単位）
 
-# dataviz検証済み（12色・CVDセーフ順）
+# dataviz検証済み（12色・CVDセーフ順）。13本目以降は同じ色を破線で使い回す
 PALETTE = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948",
            "#e87ba4", "#eb6834", "#0d9ddb", "#7a9c00", "#a24bcf", "#946200"]
+
+
+def line_style(i: int, width: float = 2) -> dict:
+    """21系列を12色×実線/破線で描き分ける"""
+    style = dict(color=PALETTE[i % len(PALETTE)], width=width)
+    if i >= len(PALETTE):
+        style["dash"] = "dash"
+    return style
 
 
 def load_baskets():
@@ -196,7 +204,7 @@ def build_figs(frames, series, labels):
         contours=dict(coloring="heatmap"),
         colorbar=dict(title="流入(+)<br>流出(−)", thickness=12),
         hovertemplate="%{y}<br>%{x|%Y-%m-%d}<br>フロー: %{z:.3f} %/日<extra></extra>"))
-    f2.update_layout(xaxis=range_buttons(), height=500)
+    f2.update_layout(xaxis=range_buttons(), height=680)
 
     # --- 図2b: 資金フロー断面（地形図の各行を折れ線で抽出） ---
     last_flow = flow.iloc[-1].abs().sort_values(ascending=False)
@@ -206,10 +214,10 @@ def build_figs(frames, series, labels):
     for i, col in enumerate(flow.columns):
         f2b.add_trace(go.Scatter(
             x=flow.index, y=flow[col], name=labels[col],
-            line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+            line=line_style(i),
             visible=True if col in vis_flow else "legendonly",
             hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>フロー: %{y:.3f} %/日<extra></extra>"))
-    f2b.update_layout(xaxis=range_buttons(), height=420)
+    f2b.update_layout(xaxis=range_buttons(), height=440)
 
     # --- 図3: 累積相対強弱 ---
     rs = frames["rs"]
@@ -219,10 +227,10 @@ def build_figs(frames, series, labels):
     for i, col in enumerate(rs.columns):
         f3.add_trace(go.Scatter(
             x=rs.index, y=rs[col], name=labels[col],
-            line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+            line=line_style(i),
             visible=True if col in visible_top else "legendonly",
             hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>市場比: %{y:.1f}%<extra></extra>"))
-    f3.update_layout(xaxis=range_buttons(), height=450)
+    f3.update_layout(xaxis=range_buttons(), height=470)
 
     for f in (f1, f2, f2b, f3):
         f.update_layout(
@@ -264,7 +272,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <details>
     <summary>この指標の読み方</summary>
     <ul>
-      <li><b>ローテーション指数</b>: 攻めのバスケット（半導体AI・銀行・商社など10分類）と守りのバスケット（ディフェンシブ・通信）の資金フローの差。プラス圏＝リスクオン、マイナス圏＝リスクオフ。</li>
+      <li><b>ローテーション指数</b>: 攻めのバスケット（半導体AI・銀行・商社など17分類）と守りのバスケット（電力ガス鉄道・食品・医薬品・通信）の資金フローの差。プラス圏＝リスクオン、マイナス圏＝リスクオフ。</li>
       <li><b>マーカーの意味</b>:
         <ul style="margin:4px 0; padding-left:1.2em">
           <li><span style="color:#2f9e44">●</span> <b>ゼロクロス↑</b>: 指数がマイナス→プラスに転換。守りから攻めへ資金が動き始めたサイン</li>
@@ -278,7 +286,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <li><b>日経平均・TOPIX（右軸）</b>: 実際の相場の値動き（表示開始日を100とした指数）。ローテーション指数がプラスなのに相場が下げている、といったズレを確認できます。右上のボタンでまとめて表示/非表示を切り替えられます。</li>
       <li><b>資金フロー地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）の強さ。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
       <li><b>資金フロー断面図</b>: 地形図を横から見た図。各線は地形図の1行と同じデータで、線がプラス圏＝流入（地形図の赤）、マイナス圏＝流出（青）に対応します。</li>
-      <li><b>累積相対強弱</b>: 「市場平均」（12バスケットの平均リターン）に対する超過リターンの積み上げ。<b>グラフ左端（表示開始日）を0%</b>として、そこから市場にどれだけ勝った/負けたかを表します。右肩上がり＝市場より強い。資金フロー（地形図・断面図）はこのグラフの「傾き」にあたり、3つのグラフは同じ計算のつながりで対応しています。</li>
+      <li><b>累積相対強弱</b>: 「市場平均」（全21バスケットの平均リターン）に対する超過リターンの積み上げ。<b>グラフ左端（表示開始日）を0%</b>として、そこから市場にどれだけ勝った/負けたかを表します。右肩上がり＝市場より強い。資金フロー（地形図・断面図）はこのグラフの「傾き」にあたり、3つのグラフは同じ計算のつながりで対応しています。</li>
       <li>数値はすべて株価から計算した加工済みの独自指標です。</li>
     </ul>
   </details>
