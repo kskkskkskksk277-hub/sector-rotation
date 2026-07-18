@@ -43,17 +43,33 @@ SIGMA_WINDOW = 120      # ±σバンドを測る期間（営業日）
 WARMUP = 60             # 表示から捨てる先頭期間（平滑化が安定するまで）
 ACCEL_TH = 1.2          # 加速/減速シグナルのしきい値（σ単位）
 
-# dataviz検証済み（12色・CVDセーフ順）。13本目以降は同じ色を破線で使い回す
-PALETTE = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948",
-           "#e87ba4", "#eb6834", "#0d9ddb", "#7a9c00", "#a24bcf", "#946200"]
+# 21バスケット分の実線用カラー（隣接が似ないよう手動配列）
+PALETTE = ["#2a78d6", "#e34948", "#008300", "#eda100", "#4a3aa7", "#1baf7a",
+           "#eb6834", "#0d9ddb", "#a24bcf", "#7a9c00", "#e87ba4", "#946200",
+           "#17877d", "#d43f8c", "#5a63e0", "#a05a2c", "#647087", "#4d7c0f",
+           "#b0399e", "#c96f00", "#356ac0"]
+
+# 全グラフ共通の余白（固定値にすることで横軸の位置を完全に揃える）
+MARGIN = dict(l=84, r=70, t=45, b=10)
+
+# 地形図の縦軸用の短縮ラベル（左余白84pxに収める）
+SHORT_LABEL = {
+    "電力・ガス・鉄道": "電力ガス鉄道",
+    "食品・生活用品": "食品・生活",
+    "保険・証券・その他金融": "保険・金融",
+    "建設・不動産・住宅": "建設・不動産",
+    "資源・エネルギー": "エネルギー",
+    "ネット・ITサービス": "ネット・IT",
+    "ゲーム・エンタメ": "エンタメ",
+    "機械・FA・ロボット": "機械・FA",
+    "精密・医療機器": "精密・医療",
+    "電機・電子部品": "電機・部品",
+    "鉄鋼・非鉄・電線": "鉄鋼・非鉄",
+}
 
 
-def line_style(i: int, width: float = 2) -> dict:
-    """21系列を12色×実線/破線で描き分ける"""
-    style = dict(color=PALETTE[i % len(PALETTE)], width=width)
-    if i >= len(PALETTE):
-        style["dash"] = "dash"
-    return style
+def short(label: str) -> str:
+    return SHORT_LABEL.get(label, label)
 
 
 def load_baskets():
@@ -180,9 +196,8 @@ def build_figs(frames, series, labels):
 
     f1.update_layout(
         xaxis=range_buttons(), height=460,
-        yaxis=dict(title=dict(text="ローテーション指数", font=dict(size=11))),
-        yaxis2=dict(title=dict(text="日経平均・TOPIX（開始=100）", font=dict(size=11)),
-                    overlaying="y", side="right", showgrid=False),
+        yaxis=dict(automargin=False),
+        yaxis2=dict(overlaying="y", side="right", showgrid=False, automargin=False),
         updatemenus=[dict(
             type="buttons", direction="right",
             x=1, xanchor="right", y=1.18, yanchor="top",
@@ -198,47 +213,52 @@ def build_figs(frames, series, labels):
     z = gaussian_filter(flow.to_numpy().T, sigma=(HEAT_SIGMA_B, 0), mode="nearest")
     zmax = np.percentile(np.abs(z), 98)
     f2 = go.Figure(go.Contour(
-        z=z, x=flow.index, y=[labels[c] for c in flow.columns],
+        z=z, x=flow.index, y=[short(labels[c]) for c in flow.columns],
         colorscale="RdBu", reversescale=True, zmid=0, zmin=-zmax, zmax=zmax,
         line=dict(color="rgba(30,34,45,0.55)", width=1),
         contours=dict(coloring="heatmap"),
-        colorbar=dict(title="流入(+)<br>流出(−)", thickness=12),
+        colorbar=dict(title=dict(text="流入<br>↑<br>↓<br>流出", font=dict(size=10)),
+                      thickness=10, x=1.0, xanchor="left", tickfont=dict(size=9)),
         hovertemplate="%{y}<br>%{x|%Y-%m-%d}<br>フロー: %{z:.3f} %/日<extra></extra>"))
-    f2.update_layout(xaxis=range_buttons(), height=680)
+    f2.update_layout(xaxis=range_buttons(), height=680,
+                     yaxis=dict(tickfont=dict(size=10), automargin=False))
+
+    # 断面図・累積相対強弱の初期表示セクター（直近の相対強弱の動きが大きい10個）
+    # 表示切替はHTML側のチェックボックスで行う（凡例は使わない）
+    rs = frames["rs"]
+    default_visible = set(rs.iloc[-1].abs().sort_values(ascending=False).index[:10])
 
     # --- 図2b: 資金フロー断面（地形図の各行を折れ線で抽出） ---
-    last_flow = flow.iloc[-1].abs().sort_values(ascending=False)
-    vis_flow = set(last_flow.index[:4])
     f2b = go.Figure()
     f2b.add_hline(y=0, line=dict(color="#9aa0a6", width=1))
     for i, col in enumerate(flow.columns):
         f2b.add_trace(go.Scatter(
             x=flow.index, y=flow[col], name=labels[col],
-            line=line_style(i),
-            visible=True if col in vis_flow else "legendonly",
+            line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+            visible=col in default_visible, showlegend=False,
             hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>フロー: %{y:.3f} %/日<extra></extra>"))
-    f2b.update_layout(xaxis=range_buttons(), height=440)
+    f2b.update_layout(xaxis=range_buttons(), height=440,
+                      yaxis=dict(automargin=False))
 
     # --- 図3: 累積相対強弱 ---
-    rs = frames["rs"]
-    last = rs.iloc[-1].abs().sort_values(ascending=False)
-    visible_top = set(last.index[:4])
     f3 = go.Figure()
+    f3.add_hline(y=0, line=dict(color="#9aa0a6", width=1))
     for i, col in enumerate(rs.columns):
         f3.add_trace(go.Scatter(
             x=rs.index, y=rs[col], name=labels[col],
-            line=line_style(i),
-            visible=True if col in visible_top else "legendonly",
+            line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+            visible=col in default_visible, showlegend=False,
             hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>市場比: %{y:.1f}%<extra></extra>"))
-    f3.update_layout(xaxis=range_buttons(), height=470)
+    f3.update_layout(xaxis=range_buttons(), height=470,
+                     yaxis=dict(automargin=False))
 
     for f in (f1, f2, f2b, f3):
         f.update_layout(
             template="plotly_white", font=dict(family="'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif", size=12),
-            margin=dict(l=10, r=10, t=45, b=10),
+            margin=MARGIN,
             legend=dict(orientation="h", y=-0.12, font=dict(size=10)),
             hoverlabel=dict(font_size=12))
-    return f1, f2, f2b, f3
+    return f1, f2, f2b, f3, default_visible
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -263,6 +283,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
              padding: 10px 14px; margin-bottom: 14px; font-size: .85rem; line-height: 1.7; }}
   summary {{ cursor: pointer; font-weight: 600; }}
   .js-plotly-plot {{ width: 100%; }}
+  .selgrid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+              gap: 2px 8px; font-size: .8rem; padding: 6px 10px 10px; }}
+  .selgrid label {{ display: flex; align-items: center; gap: 5px; cursor: pointer;
+                    padding: 3px 2px; white-space: nowrap; }}
+  .selgrid input {{ accent-color: #2a78d6; width: 15px; height: 15px; flex: none; }}
+  .chip {{ display: inline-block; width: 11px; height: 11px; border-radius: 3px; flex: none; }}
+  .selbtns {{ padding: 4px 10px 0; }}
+  .selbtns button {{ font-size: .8rem; padding: 5px 12px; margin-right: 8px; cursor: pointer;
+                     border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; }}
+  .selbtns button:active {{ background: #e5e7eb; }}
 </style>
 </head>
 <body>
@@ -293,15 +323,39 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="card"><h2>ローテーション指数（＋＝リスクオン ／ −＝リスクオフ）</h2>
     <p class="note">細い線は日経平均・TOPIX（右軸・開始=100）。右上のボタンでまとめて表示/非表示</p>{fig1}</div>
   <div class="card"><h2>資金フロー地形図（赤＝流入・青＝流出）</h2>{fig2}</div>
+  <div class="card">
+    <h2>表示セクターの選択</h2>
+    <p class="note">下2つのグラフ（断面図・累積相対強弱）に反映されます。初期表示は直近の動きが大きい10セクター</p>
+    <div class="selbtns">
+      <button type="button" onclick="allSectors(true)">全て表示</button>
+      <button type="button" onclick="allSectors(false)">全て非表示</button>
+    </div>
+    <div class="selgrid" id="selgrid">{sector_checkboxes}</div>
+  </div>
   <div class="card"><h2>資金フロー断面図（地形図を横から見た図・%/日）</h2>
-    <p class="note">各線＝地形図の1行。プラス圏＝流入、マイナス圏＝流出。凡例タップでセクターを選択（初期表示は直近フローが大きい4つ）</p>{fig2b}</div>
+    <p class="note">各線＝地形図の1行。プラス圏＝流入、マイナス圏＝流出</p>{fig2b}</div>
   <div class="card"><h2>累積相対強弱（市場平均比・表示開始日=0%）</h2>
-    <p class="note">凡例タップで表示/非表示を切り替え（初期表示は直近の動きが大きい4つ）</p>{fig3}</div>
+    <p class="note">右肩上がり＝市場平均より強い</p>{fig3}</div>
   <details>
     <summary>各セクターの採用銘柄一覧</summary>
     {baskets_html}
   </details>
 </div>
+<script>
+function selFigs() {{
+  return [document.getElementById("figflow"), document.getElementById("figrs")];
+}}
+function oneSector(cb) {{
+  const i = Number(cb.dataset.i);
+  selFigs().forEach(gd => Plotly.restyle(gd, {{visible: cb.checked}}, [i]));
+}}
+function allSectors(on) {{
+  const boxes = document.querySelectorAll("#selgrid input");
+  boxes.forEach(cb => {{ cb.checked = on; }});
+  const idx = Array.from(boxes, cb => Number(cb.dataset.i));
+  selFigs().forEach(gd => Plotly.restyle(gd, {{visible: on}}, idx));
+}}
+</script>
 </body>
 </html>
 """
@@ -323,16 +377,27 @@ def main() -> None:
     if not PRICES.exists():
         sys.exit("data/prices.parquet がありません。先に fetch_data.py を実行してください。")
     frames, series, labels = compute()
-    f1, f2, f2b, f3 = build_figs(frames, series, labels)
+    f1, f2, f2b, f3, default_visible = build_figs(frames, series, labels)
 
     cfg = {"responsive": True, "displaylogo": False,
            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
-    parts = [f.to_html(full_html=False, include_plotlyjs=False, config=cfg)
-             for f in (f1, f2, f2b, f3)]
+    kw = dict(full_html=False, include_plotlyjs=False, config=cfg)
+    parts = [f1.to_html(**kw), f2.to_html(**kw),
+             f2b.to_html(div_id="figflow", **kw), f3.to_html(div_id="figrs", **kw)]
+
+    # セクター選択チェックボックス（グラフのトレース順と同じ並び）
+    boxes = []
+    for i, col in enumerate(frames["flow"].columns):
+        checked = " checked" if col in default_visible else ""
+        boxes.append(
+            f'<label><input type="checkbox" data-i="{i}"{checked} onchange="oneSector(this)">'
+            f'<span class="chip" style="background:{PALETTE[i % len(PALETTE)]}"></span>'
+            f'{labels[col]}</label>')
 
     jst = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)
     html = HTML_TEMPLATE.format(updated=jst.strftime("%Y-%m-%d %H:%M JST"),
                                 fig1=parts[0], fig2=parts[1], fig2b=parts[2], fig3=parts[3],
+                                sector_checkboxes="\n".join(boxes),
                                 baskets_html=baskets_table_html())
     OUT_DIR.mkdir(exist_ok=True)
     (OUT_DIR / "index.html").write_text(html, encoding="utf-8")
