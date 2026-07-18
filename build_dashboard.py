@@ -133,13 +133,18 @@ def compute():
     series = {k: v.loc[keep] for k, v in series.items()}
     # 累積相対強弱は表示開始日を0%に揃える（見た目の起点を明確に）
     frames["rs"] = frames["rs"] - frames["rs"].iloc[0]
+    # HTMLに埋め込むデータ量を減らすため小数を丸める（5年分×21系列対策）
+    frames["flow"] = frames["flow"].round(3)
+    frames["rs"] = frames["rs"].round(2)
+    series["rot"] = series["rot"].round(3)
+    series["sigma"] = series["sigma"].round(3)
 
     mkt = mkt.loc[keep]
     for col in mkt.columns:
         base = mkt[col].dropna()
         if not base.empty:
             mkt[col] = mkt[col] / base.iloc[0] * 100.0
-    frames["mkt_idx"] = mkt
+    frames["mkt_idx"] = mkt.round(2)
 
     return frames, series, labels
 
@@ -210,7 +215,7 @@ def build_figs(frames, series, labels):
 
     # --- 図2: 資金フロー地形図 ---
     flow = frames["flow"]
-    z = gaussian_filter(flow.to_numpy().T, sigma=(HEAT_SIGMA_B, 0), mode="nearest")
+    z = np.round(gaussian_filter(flow.to_numpy().T, sigma=(HEAT_SIGMA_B, 0), mode="nearest"), 3)
     zmax = np.percentile(np.abs(z), 98)
     f2 = go.Figure(go.Contour(
         z=z, x=flow.index, y=[short(labels[c]) for c in flow.columns],

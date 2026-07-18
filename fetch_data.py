@@ -34,8 +34,9 @@ DATA_DIR = ROOT / "data"
 PRICES = DATA_DIR / "prices.parquet"
 INDICES = DATA_DIR / "indices.parquet"
 
-# 表示1.5年 + 指標計算のウォームアップ分を遡る（暦日）
-LOOKBACK_DAYS = 820
+# 取得期間（暦日）。J-Quants Lightプランの上限は過去5年ちょうどで、
+# それより古い日付を from に指定すると 400 エラーになるため、少し内側の1800日にする
+LOOKBACK_DAYS = 1800
 
 
 def log(msg: str) -> None:
@@ -153,7 +154,7 @@ def main() -> None:
             missing.append(code)
         if i % 20 == 0:
             log(f"  {i}/{len(codes)} 銘柄完了")
-        time.sleep(0.2)  # 行儀よく
+        time.sleep(0.05)  # 行儀よく（レート制限時は自動で10秒待機）
 
     if missing:
         log(f"注意: データが取れなかった銘柄: {missing}")
