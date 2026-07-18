@@ -153,22 +153,35 @@ def build_figs(frames, series, labels):
     f1.add_trace(sig_trace(rot, series["minus_break"], "−σブレイク（悲観極まる）", "circle", "#8a3ffc"))
     f1.add_trace(sig_trace(rot, series["accel"], "加速アラート", "triangle-up", "#2f9e44", 9))
     f1.add_trace(sig_trace(rot, series["decel"], "減速アラート", "triangle-down", "#d64550", 9))
-    f1.update_layout(xaxis=range_buttons(), height=420)
 
-    # --- 図1b: 参考指数（TOPIX・日経平均、表示開始日=100の指数化） ---
+    # --- 同じグラフに日経平均・TOPIXを右軸で重ねる（表示開始日=100） ---
     mkt = frames["mkt_idx"]
-    f1b = go.Figure()
-    idx_names = {"TOPIX": "TOPIX", "NIKKEI225": "日経平均"}
-    idx_colors = {"TOPIX": PALETTE[0], "NIKKEI225": PALETTE[7]}
+    idx_names = {"NIKKEI225": "日経平均", "TOPIX": "TOPIX"}
+    idx_colors = {"NIKKEI225": "#eb6834", "TOPIX": "#2a78d6"}
+    idx_trace_pos = []
     for col in ["NIKKEI225", "TOPIX"]:
         if col not in mkt.columns or mkt[col].dropna().empty:
             continue
-        f1b.add_trace(go.Scatter(
-            x=mkt.index, y=mkt[col], name=idx_names[col],
-            line=dict(color=idx_colors[col], width=2),
+        idx_trace_pos.append(len(f1.data))
+        f1.add_trace(go.Scatter(
+            x=mkt.index, y=mkt[col], name=idx_names[col], yaxis="y2",
+            line=dict(color=idx_colors[col], width=1.6), opacity=0.75,
             hovertemplate=idx_names[col] + "<br>%{x|%Y-%m-%d}<br>指数値: %{y:.1f}（開始日=100）<extra></extra>"))
-    f1b.add_hline(y=100, line=dict(color="#9aa0a6", width=1, dash="dot"))
-    f1b.update_layout(xaxis=range_buttons(), height=280)
+
+    f1.update_layout(
+        xaxis=range_buttons(), height=460,
+        yaxis=dict(title=dict(text="ローテーション指数", font=dict(size=11))),
+        yaxis2=dict(title=dict(text="日経平均・TOPIX（開始=100）", font=dict(size=11)),
+                    overlaying="y", side="right", showgrid=False),
+        updatemenus=[dict(
+            type="buttons", direction="right",
+            x=1, xanchor="right", y=1.18, yanchor="top",
+            pad=dict(r=0, t=0), font=dict(size=11),
+            buttons=[dict(
+                label="日経・TOPIX 表示/非表示",
+                method="restyle",
+                args=[{"visible": True}, idx_trace_pos],
+                args2=[{"visible": "legendonly"}, idx_trace_pos])])])
 
     # --- 図2: 資金フロー地形図 ---
     flow = frames["flow"]
@@ -196,13 +209,13 @@ def build_figs(frames, series, labels):
             hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>市場比: %{y:.1f}%<extra></extra>"))
     f3.update_layout(xaxis=range_buttons(), height=450)
 
-    for f in (f1, f1b, f2, f3):
+    for f in (f1, f2, f3):
         f.update_layout(
             template="plotly_white", font=dict(family="'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif", size=12),
             margin=dict(l=10, r=10, t=45, b=10),
             legend=dict(orientation="h", y=-0.12, font=dict(size=10)),
             hoverlabel=dict(font_size=12))
-    return f1, f1b, f2, f3
+    return f1, f2, f3
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -238,38 +251,54 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <ul>
       <li><b>ローテーション指数</b>: 攻めのバスケット（半導体AI・銀行・商社など）と守りのバスケット（ディフェンシブ・通信）の資金フローの差。プラス圏＝リスクオン、マイナス圏＝リスクオフ。</li>
       <li><b>ゼロクロス</b>: 攻守の入れ替わりのタイミング。<b>±σブレイク</b>: 偏りが普段の変動幅を超えた（行き過ぎ）サイン。</li>
-      <li><b>参考指数</b>: 日経平均・TOPIXの実際の値動き（表示開始日を100とした指数）。ローテーション指数がプラスなのに相場が下げている、といったズレを確認できます。</li>
+      <li><b>日経平均・TOPIX（右軸）</b>: 実際の相場の値動き（表示開始日を100とした指数）。ローテーション指数がプラスなのに相場が下げている、といったズレを確認できます。右上のボタンでまとめて表示/非表示を切り替えられます。</li>
       <li><b>地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
       <li><b>累積相対強弱</b>: 市場平均に対する勝ち負けの積み上げ。右肩上がり＝市場より強い。</li>
       <li>数値はすべて株価から計算した加工済みの独自指標です。</li>
     </ul>
   </details>
-  <div class="card"><h2>ローテーション指数（＋＝リスクオン ／ −＝リスクオフ）</h2>{fig1}</div>
-  <div class="card"><h2>参考：日経平均・TOPIXの推移（表示開始日=100）</h2>
-    <p class="note">上のローテーション指数と同じ期間・横軸。実際の相場の方向感と見比べてください</p>{fig1b}</div>
+  <div class="card"><h2>ローテーション指数（＋＝リスクオン ／ −＝リスクオフ）</h2>
+    <p class="note">細い線は日経平均・TOPIX（右軸・開始=100）。右上のボタンでまとめて表示/非表示</p>{fig1}</div>
   <div class="card"><h2>資金フロー地形図（赤＝流入・青＝流出）</h2>{fig2}</div>
   <div class="card"><h2>累積相対強弱（市場平均に対する勝ち負け・%）</h2>
     <p class="note">凡例タップで表示/非表示を切り替え（初期表示は直近の動きが大きい4つ）</p>{fig3}</div>
+  <details>
+    <summary>各セクターの採用銘柄一覧</summary>
+    {baskets_html}
+  </details>
 </div>
 </body>
 </html>
 """
 
 
+def baskets_table_html() -> str:
+    """採用銘柄一覧（銘柄名と証券コードのみ＝公開情報。株価データは含まない）"""
+    cfg = json.loads((ROOT / "baskets.json").read_text(encoding="utf-8"))
+    parts = []
+    for name, b in cfg["baskets"].items():
+        members = "、".join(f"{co}({code})" for code, co in b["codes"].items())
+        group = "守り" if name in cfg["risk_off"] else "攻め"
+        parts.append(f'<p style="margin:6px 0"><b>{b["label"]}</b>'
+                     f'<span style="color:#6b7280">（{group}・{len(b["codes"])}銘柄）</span><br>{members}</p>')
+    return "\n".join(parts)
+
+
 def main() -> None:
     if not PRICES.exists():
         sys.exit("data/prices.parquet がありません。先に fetch_data.py を実行してください。")
     frames, series, labels = compute()
-    f1, f1b, f2, f3 = build_figs(frames, series, labels)
+    f1, f2, f3 = build_figs(frames, series, labels)
 
     cfg = {"responsive": True, "displaylogo": False,
            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
     parts = [f.to_html(full_html=False, include_plotlyjs=False, config=cfg)
-             for f in (f1, f1b, f2, f3)]
+             for f in (f1, f2, f3)]
 
     jst = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)
     html = HTML_TEMPLATE.format(updated=jst.strftime("%Y-%m-%d %H:%M JST"),
-                                fig1=parts[0], fig1b=parts[1], fig2=parts[2], fig3=parts[3])
+                                fig1=parts[0], fig2=parts[1], fig3=parts[2],
+                                baskets_html=baskets_table_html())
     OUT_DIR.mkdir(exist_ok=True)
     (OUT_DIR / "index.html").write_text(html, encoding="utf-8")
     print(f"出力完了: {OUT_DIR / 'index.html'}（データ最終日: {series['rot'].index[-1]:%Y-%m-%d}）")
