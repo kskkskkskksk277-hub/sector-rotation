@@ -229,7 +229,10 @@ def build_figs(frames, series, labels):
     f1.add_trace(sig_trace(rot, series["accel"], "加速アラート", "triangle-up", "#2f9e44", 9))
     f1.add_trace(sig_trace(rot, series["decel"], "減速アラート", "triangle-down", "#d64550", 9))
 
-    # --- 同じグラフに日経平均・TOPIXを右軸で重ねる（表示開始日=100） ---
+    # --- 同じグラフに日経平均・TOPIXを右軸で重ねる ---
+    # 初期値は全期間の先頭=100。期間を絞ったときはHTML側のJSが
+    # 「表示中の期間の先頭=100」に振り直す（rebaseIdx()）
+
     mkt = frames["mkt_idx"]
     idx_names = {"NIKKEI225": "日経平均", "TOPIX": "TOPIX"}
     idx_colors = {"NIKKEI225": "#eb6834", "TOPIX": "#2a78d6"}
@@ -238,13 +241,25 @@ def build_figs(frames, series, labels):
         if col not in mkt.columns or mkt[col].dropna().empty:
             continue
         idx_trace_pos.append(len(f1.data))
+        # x/y はプレーンなリストで渡す（numpy配列だとPlotlyがbase64で埋め込み、
+        # 期間切替時の再計算を行うJS側から配列として読めなくなるため）
         f1.add_trace(go.Scatter(
-            x=mkt.index, y=mkt[col], name=idx_names[col], yaxis="y2",
+            x=[d.strftime("%Y-%m-%d") for d in mkt.index],
+            y=[None if pd.isna(v) else float(v) for v in mkt[col]],
+            name=idx_names[col], yaxis="y2",
             line=dict(color=idx_colors[col], width=1.6), opacity=0.75,
-            hovertemplate=idx_names[col] + "<br>%{x|%Y-%m-%d}<br>指数値: %{y:.1f}（開始日=100）<extra></extra>"))
+            hovertemplate=idx_names[col] + "<br>%{x|%Y-%m-%d}<br>指数値: %{y:.1f}（表示期間の開始=100）<extra></extra>"))
+
+    # 横軸はデータの両端ぴったりに固定する。自動範囲だと前後に約5%（≒3ヶ月）の
+    # 余白が付き、3M/6M/1Yボタンがその余白ぶん未来側にずれて中身が消えてしまう
+    # 日付のみの文字列で指定する（時刻付きだとJS側がローカル時刻として解釈し、
+    # 判定境界が9時間ずれて最終日が範囲外に落ちる）
+    xaxis_cfg = range_buttons()
+    xaxis_cfg["range"] = [rot.index[0].strftime("%Y-%m-%d"),
+                          rot.index[-1].strftime("%Y-%m-%d")]
 
     f1.update_layout(
-        xaxis=range_buttons(), height=460,
+        xaxis=xaxis_cfg, height=460,
         yaxis=dict(automargin=False),
         yaxis2=dict(overlaying="y", side="right", showgrid=False, automargin=False),
         updatemenus=[dict(
@@ -362,7 +377,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <li><span style="color:#d64550">▼</span> <b>減速アラート</b>: 勢いが急に衰えた（トレンド失速の初動を示唆）</li>
         </ul>
       </li>
-      <li><b>日経平均・TOPIX（右軸）</b>: 実際の相場の値動き（表示開始日を100とした指数）。ローテーション指数がプラスなのに相場が下げている、といったズレを確認できます。右上のボタンでまとめて表示/非表示を切り替えられます。</li>
+      <li><b>日経平均・TOPIX（右軸）</b>: 実際の相場の値動き。3M/6M/1Y/Allを切り替えると、表示中の期間の先頭が100になるよう自動で振り直されます（その期間で何%動いたかがそのまま読めます）。ローテーション指数がプラスなのに相場が下げている、といったズレを確認できます。右上のボタンでまとめて表示/非表示を切り替えられます。</li>
       <li><b>資金フロー地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）の強さ。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
       <li><b>資金フロー断面図</b>: 地形図を横から見た図。各線は地形図の1行と同じデータで、線がプラス圏＝流入（地形図の赤）、マイナス圏＝流出（青）に対応します。</li>
       <li><b>累積相対強弱</b>: 「市場平均」（全21バスケットの平均リターン）に対する超過リターンの積み上げ。<b>グラフ左端（表示開始日）を0%</b>として、そこから市場にどれだけ勝った/負けたかを表します。右肩上がり＝市場より強い。資金フロー（地形図・断面図）はこのグラフの「傾き」にあたり、3つのグラフは同じ計算のつながりで対応しています。</li>
@@ -371,7 +386,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </ul>
   </details>
   <div class="card"><h2>ローテーション指数（＋＝リスクオン ／ −＝リスクオフ）</h2>
-    <p class="note">細い線は日経平均・TOPIX（右軸・開始=100）。右上のボタンでまとめて表示/非表示</p>{fig1}</div>
+    <p class="note">細い線は日経平均・TOPIX（右軸・表示中の期間の先頭を100に自動調整）。右上のボタンでまとめて表示/非表示</p>{fig1}</div>
   <div class="card"><h2>資金フロー地形図（赤＝流入・青＝流出）</h2>{fig2}</div>
   <div class="card">
     <h2>表示セクターの選択</h2>
@@ -392,6 +407,69 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </details>
 </div>
 <script>
+// --- 日経平均・TOPIXを「表示中の期間の先頭=100」に振り直す ---
+// 期間ボタンやズームは横軸を変えるだけなので、右軸の指数はJS側で基準を取り直す。
+// 元データ（全期間先頭=100の系列）を保持し、毎回そこから再計算する。
+var IDX = null;
+function initIdx() {{
+  var gd = document.getElementById("figrot");
+  if (!gd || !gd.data) return false;
+  IDX = {{gd: gd, traces: [], y: [], t: []}};
+  gd.data.forEach(function (tr, i) {{
+    if (tr.yaxis !== "y2" || !tr.y || typeof tr.y.length !== "number") return;
+    IDX.traces.push(i);
+    IDX.y.push(Array.prototype.slice.call(tr.y));
+    IDX.t.push(Array.prototype.map.call(tr.x, function (d) {{
+      return new Date(d).getTime();
+    }}));
+  }});
+  if (!IDX.traces.length) return false;
+  var flat = [].concat.apply([], IDX.t);
+  IDX.tmin = Math.min.apply(null, flat);
+  IDX.tmax = Math.max.apply(null, flat);
+  return true;
+}}
+function pt(v) {{ return typeof v === "number" ? v : new Date(v).getTime(); }}
+
+// 期間ボタンは横軸の右端から遡って範囲を決めるため、右端がデータ最終日より
+// 未来にあると表示がずれる（3Mだと中身が空になる）。はみ出しを検出したら
+// データ最終日で終わるよう同じ幅で引き戻す。
+var CLAMPING = false;
+function clampX() {{
+  if (!IDX || CLAMPING) return false;
+  var xa = IDX.gd.layout.xaxis;
+  if (!xa || !xa.range) return false;
+  var lo = pt(xa.range[0]), hi = pt(xa.range[1]);
+  if (hi <= IDX.tmax + 864e5) return false;
+  var nlo = Math.max(IDX.tmin, IDX.tmax - (hi - lo));
+  CLAMPING = true;
+  Plotly.relayout(IDX.gd, {{"xaxis.range": [new Date(nlo).toISOString(),
+                                           new Date(IDX.tmax).toISOString()]}})
+        .then(function () {{ CLAMPING = false; rebaseIdx(); }});
+  return true;
+}}
+
+function rebaseIdx() {{
+  if (!IDX) return;
+  var xa = IDX.gd.layout.xaxis, lo = -Infinity, hi = Infinity;
+  if (xa && xa.range) {{ lo = pt(xa.range[0]); hi = pt(xa.range[1]); }}
+  var ys = IDX.y.map(function (raw, k) {{
+    var ts = IDX.t[k], base = null;
+    return raw.map(function (v, i) {{
+      // 表示範囲外は null にして、右軸が表示中のデータだけに合わせて自動調整されるようにする
+      if (v == null || ts[i] < lo || ts[i] > hi) return null;
+      if (base === null) base = v;
+      return Math.round(v / base * 1000) / 10;
+    }});
+  }});
+  Plotly.restyle(IDX.gd, {{y: ys}}, IDX.traces);
+}}
+window.addEventListener("load", function () {{
+  if (!initIdx()) return;
+  rebaseIdx();
+  IDX.gd.on("plotly_relayout", function () {{ if (!clampX()) rebaseIdx(); }});
+}});
+
 function selFigs() {{
   return [document.getElementById("figflow"), document.getElementById("figrs")];
 }}
@@ -432,7 +510,7 @@ def main() -> None:
     cfg = {"responsive": True, "displaylogo": False,
            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
     kw = dict(full_html=False, include_plotlyjs=False, config=cfg)
-    parts = [f1.to_html(**kw), f2.to_html(**kw),
+    parts = [f1.to_html(div_id="figrot", **kw), f2.to_html(**kw),
              f2b.to_html(div_id="figflow", **kw), f3.to_html(div_id="figrs", **kw)]
 
     # セクター選択チェックボックス（グラフのトレース順と同じ並び）
