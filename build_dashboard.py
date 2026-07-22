@@ -10,10 +10,16 @@
  ・バスケット日次リターン = 構成銘柄の対数リターンの単純平均
  ・相対リターン rel = バスケットリターン − 全バスケット平均（市場）
  ・累積相対強弱 RS = rel の累積和（市場に対してどれだけ勝ち越しているか）
- ・資金フロー flow = rel をガウス平滑化したもの（%/日）
+ ・資金フロー flow = rel を指数移動平均で平滑化したもの（%/日）
      プラス＝そのバスケットへ資金流入、マイナス＝流出
  ・ローテーション指数 = 攻めバスケットの flow 平均 − 守りバスケットの flow 平均
      プラス＝リスクオン（景気敏感・グロースへ資金）、マイナス＝守りへ退避
+
+ 【重要】平滑化はすべて「その日までのデータのみ」を使う後ろ向き（因果的）計算。
+ 中心化ガウス平滑（前後±8営業日を参照）を使っていた頃は、新しい日のデータが
+ 入るたびに過去のシグナル位置が動いてしまい、実運用では再現できない
+ 「未来を見た」指標になっていた。一度表示されたシグナルが動かないことを
+ 優先し、2026-07-18 に指数移動平均へ変更した（代償として反応は数日遅れる）。
 ============================================================
 """
 from pathlib import Path
@@ -24,7 +30,8 @@ import sys
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from scipy.ndimage import gaussian_filter, gaussian_filter1d
+from scipy.ndimage import gaussian_filter
+from scipy.signal import lfilter
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -37,8 +44,12 @@ INDICES = ROOT / "data" / "indices.parquet"
 OUT_DIR = ROOT / "out"
 
 # --- 計算パラメータ ---------------------------------------------------
-FLOW_SIGMA_T = 4        # フローの時間方向の平滑化（営業日）
-HEAT_SIGMA_B = 0.8      # ヒートマップのバスケット方向の平滑化
+# 片側（過去向き）ガウス平滑の σ。旧・中心化ガウス平滑（σ=4 / σ=2）と同じ
+# ノイズ低減量になる値（片側なので σ は2倍）。未来のデータは一切参照しない。
+FLOW_SIGMA_T = 8        # フローの時間方向の平滑化
+ACCEL_SIGMA = 8         # 加速度（2階差分）の平滑化（2階差分はノイズが大きいため強めに）
+COOLDOWN = 10           # 同一シグナルの再点灯を抑える日数（同じ局面の重複検出を1つにまとめる）
+HEAT_SIGMA_B = 0.8      # ヒートマップのバスケット方向の平滑化（時間方向には掛けない）
 SIGMA_WINDOW = 120      # ±σバンドを測る期間（営業日）
 WARMUP = 60             # 表示から捨てる先頭期間（平滑化が安定するまで）
 ACCEL_TH = 1.2          # 加速/減速シグナルのしきい値（σ単位）
@@ -72,6 +83,39 @@ def short(label: str) -> str:
     return SHORT_LABEL.get(label, label)
 
 
+def causal_gaussian(df, sigma: float, truncate: float = 3.0):
+    """片側（過去向き）ガウス平滑。その日と過去 3σ 日だけを重み付き平均する。
+
+    中心化ガウス平滑と違い未来を参照しないので、後からデータが増えても
+    過去の値は一切変わらない。代わりに σ√(2/π) 日ぶん反応が遅れる。
+    """
+    n = int(truncate * sigma)
+    k = np.exp(-0.5 * (np.arange(n + 1) / sigma) ** 2)
+    k /= k.sum()                      # k[0]=当日, k[1]=前日, …
+    arr = np.asarray(df, dtype=float)
+    one_d = arr.ndim == 1
+    if one_d:
+        arr = arr[:, None]
+    pad = np.repeat(arr[:1], n, axis=0)          # 先頭は最初の値で埋める
+    out = lfilter(k, 1.0, np.vstack([pad, arr]), axis=0)[n:]
+    if one_d:
+        out = out[:, 0]
+        return pd.Series(out, index=df.index)
+    return pd.DataFrame(out, index=df.index, columns=df.columns)
+
+
+def cooldown(mask: pd.Series, days: int = COOLDOWN) -> pd.Series:
+    """点灯後 days 営業日は再点灯させない（同じ局面での連続検出を1つにまとめる）"""
+    out = mask.to_numpy().copy()
+    last = -10**9
+    for i in np.flatnonzero(out):
+        if i - last < days:
+            out[i] = False
+        else:
+            last = i
+    return pd.Series(out, index=mask.index)
+
+
 def load_baskets():
     cfg = json.loads((ROOT / "baskets.json").read_text(encoding="utf-8"))
     baskets = {name: [c + "0" for c in b["codes"]] for name, b in cfg["baskets"].items()}
@@ -94,9 +138,8 @@ def compute():
     rel = basket_ret.sub(market, axis=0).dropna(how="all")
 
     rs = rel.cumsum()
-    flow = pd.DataFrame(
-        gaussian_filter1d(rel.to_numpy(), sigma=FLOW_SIGMA_T, axis=0, mode="nearest"),
-        index=rel.index, columns=rel.columns)
+    # 片側ガウス平滑（その日までのデータのみ）。過去の値が後から変わらない
+    flow = causal_gaussian(rel, FLOW_SIGMA_T)
 
     risk_on = [b for b in flow.columns if b not in risk_off]
     rot = flow[risk_on].mean(axis=1) - flow[risk_off].mean(axis=1)
@@ -111,7 +154,7 @@ def compute():
     minus_break = (rot < -sigma) & (rot.shift() >= -sigma.shift())
 
     accel = rot.diff().diff()  # 傾きの変化（2階差分）
-    accel_s = pd.Series(gaussian_filter1d(accel.fillna(0).to_numpy(), 2), index=rot.index)
+    accel_s = causal_gaussian(accel.fillna(0), ACCEL_SIGMA)
     ath = accel_s.rolling(SIGMA_WINDOW, min_periods=SIGMA_WINDOW // 2).std() * ACCEL_TH
     accel_alert = (accel_s > ath) & (accel_s.shift() <= ath.shift())
     decel_alert = (accel_s < -ath) & (accel_s.shift() >= -ath.shift())
@@ -126,9 +169,10 @@ def compute():
     # ウォームアップ期間を落とす
     keep = rel.index[WARMUP:]
     frames = dict(rs=rs, flow=flow)
-    series = dict(rot=rot, sigma=sigma, cross_up=cross_up, cross_dn=cross_dn,
-                  plus_break=plus_break, minus_break=minus_break,
-                  accel=accel_alert, decel=decel_alert)
+    series = dict(rot=rot, sigma=sigma,
+                  cross_up=cooldown(cross_up), cross_dn=cooldown(cross_dn),
+                  plus_break=cooldown(plus_break), minus_break=cooldown(minus_break),
+                  accel=cooldown(accel_alert), decel=cooldown(decel_alert))
     frames = {k: v.loc[keep] for k, v in frames.items()}
     series = {k: v.loc[keep] for k, v in series.items()}
     # 累積相対強弱は表示開始日を0%に揃える（見た目の起点を明確に）
@@ -322,7 +366,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <li><b>資金フロー地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）の強さ。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
       <li><b>資金フロー断面図</b>: 地形図を横から見た図。各線は地形図の1行と同じデータで、線がプラス圏＝流入（地形図の赤）、マイナス圏＝流出（青）に対応します。</li>
       <li><b>累積相対強弱</b>: 「市場平均」（全21バスケットの平均リターン）に対する超過リターンの積み上げ。<b>グラフ左端（表示開始日）を0%</b>として、そこから市場にどれだけ勝った/負けたかを表します。右肩上がり＝市場より強い。資金フロー（地形図・断面図）はこのグラフの「傾き」にあたり、3つのグラフは同じ計算のつながりで対応しています。</li>
-      <li>数値はすべて株価から計算した加工済みの独自指標です。</li>
+      <li><b>シグナルは一度出たら動きません</b>: 平滑化にその日までのデータしか使わない計算方式のため、後日データが増えても過去のシグナル位置は変わりません（2026-07-18に変更。それ以前は前後の日を平均する方式で、表示済みのシグナルが後から移動していました）。代わりに反応は数日遅れます。</li>
+      <li>数値はすべて株価から計算した加工済みの独自指標です。投資判断はご自身の責任で行ってください。</li>
     </ul>
   </details>
   <div class="card"><h2>ローテーション指数（＋＝リスクオン ／ −＝リスクオフ）</h2>

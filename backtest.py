@@ -15,9 +15,9 @@
    ・フロー最強3セクター（流入が最も強い3つ）＝順張り
 
  重要な前提（結果の読み方に影響）:
-   ・エントリーは「シグナル日の5営業日後の終値」。表示上のシグナルは
-     前後数日を使う平滑化で確定するため、当日には確定していない。
-     実運用で再現できるタイミングに寄せるための遅延。
+   ・シグナルは因果的（その日までのデータのみ）に検出されるため、
+     ここでの検証はウォークフォワード検証と等価。未来のデータは使っていない。
+   ・エントリーは「シグナル日の翌営業日の終値」（当日終値後に判明するため）
    ・売買コスト・税・配当は考慮しない
    ・シグナル同士の期間が重なることがある（各件は独立ではない）
 ============================================================
@@ -41,7 +41,7 @@ INDICES = ROOT / "data" / "indices.parquet"
 OUT_XLSX = Path(r"C:\Users\kawai\OneDrive\デスクトップ\株式投資\分析結果") / \
     "セクターローテーション_シグナルバックテスト.xlsx"
 
-ENTRY_LAG = 5                      # シグナル日→エントリーまでの営業日数
+ENTRY_LAG = 1                      # シグナル日→エントリーまでの営業日数（翌日終値）
 HORIZONS = {"1ヶ月": 20, "3ヶ月": 60, "6ヶ月": 120}   # 営業日
 
 SIGNAL_LABELS = {
@@ -153,7 +153,8 @@ def main() -> None:
             base[(asset_name, h_label)] = (np.mean(vals),
                                            np.mean([v > 0 for v in vals]) * 100)
 
-    write_excel(df, base)
+    switch_rows, switch_trades = switching_strategy(series, assets, basket_ret, dates)
+    write_excel(df, base, switch_rows, switch_trades)
 
     # コンソールにも要約を出す
     print(f"取引数: {len(df)}（シグナル{df['シグナル'].nunique()}種 × 資産6 × 発生回数）")
@@ -163,7 +164,58 @@ def main() -> None:
         print(pivot.round(2).to_string())
 
 
-def write_excel(df: pd.DataFrame, base: dict) -> None:
+def switching_strategy(series, assets, basket_ret, dates):
+    """加速アラートで買い、減速アラートで売るスイッチング戦略"""
+    def exec_dates(key):
+        out = []
+        for d in series[key][series[key]].index:
+            i = dates.get_loc(d) + ENTRY_LAG
+            if i < len(dates):
+                out.append(dates[i])
+        return out
+
+    events = sorted([(d, "B") for d in exec_dates("accel")] +
+                    [(d, "S") for d in exec_dates("decel")])
+    periods, pos, entry = [], 0, None
+    for d, typ in events:
+        if typ == "B" and pos == 0:
+            pos, entry = 1, d
+        elif typ == "S" and pos == 1 and d > entry:
+            periods.append((entry, d, False))
+            pos = 0
+    if pos == 1:
+        periods.append((entry, dates[-1], True))
+
+    targets = {
+        "日経平均": assets["日経平均"],
+        "TOPIX": assets["TOPIX"],
+        "攻めバスケット平均": assets["攻めバスケット平均"],
+    }
+    summary, trades = [], []
+    for name, lr in targets.items():
+        lr = lr.reindex(dates)
+        total, wins, held = 1.0, 0, 0
+        for e, x, open_ in periods:
+            seg = lr.loc[e:x].iloc[1:]
+            r = (np.exp(seg.sum() / 100.0) - 1.0) * 100
+            total *= 1 + r / 100.0
+            held += len(seg)
+            if r > 0:
+                wins += 1
+            trades.append({"資産": name, "買い日": e.date(), "売り日": x.date(),
+                           "保有営業日": len(seg), "リターン": r,
+                           "状態": "保有中" if open_ else "決済済"})
+        bh = (np.exp(lr.dropna().sum() / 100.0) - 1.0) * 100
+        summary.append({"資産": name, "取引数": len(periods),
+                        "勝率": wins / max(len(periods), 1) * 100,
+                        "戦略の累積リターン": (total - 1) * 100,
+                        "持ちっぱなし": bh,
+                        "市場にいた割合": held / (len(dates) - 1) * 100})
+    return summary, pd.DataFrame(trades)
+
+
+def write_excel(df: pd.DataFrame, base: dict,
+                switch_rows: list, switch_trades: pd.DataFrame) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
@@ -206,7 +258,7 @@ def write_excel(df: pd.DataFrame, base: dict) -> None:
     period = f"{df['シグナル日'].min()} 〜 {df['シグナル日'].max()}"
     notes = [
         f"検証期間: {period}（シグナル発生日ベース・約5年）",
-        f"エントリー: シグナル日の5営業日後の終値（シグナルは平滑化の関係で当日には確定しないため）",
+        "シグナルはその日までのデータのみで検出（未来のデータは不使用）。エントリーは翌営業日の終値",
         "リターン: エントリー終値から20/60/120営業日後（≒1/3/6ヶ月）の終値まで。コスト・税・配当は未考慮",
         "勝率: リターンがプラスだった割合。件数が少ないシグナルは偶然の影響が大きい点に注意",
         "シグナル同士の保有期間が重なることがあるため、各件は完全に独立した取引ではない",
@@ -277,6 +329,53 @@ def write_excel(df: pd.DataFrame, base: dict) -> None:
     for j, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(j)].width = w
     ws.freeze_panes = ws.cell(r0 + 1, 1)
+
+    # ---------- シート3: スイッチング戦略 ----------
+    ws3 = wb.create_sheet("スイッチング戦略")
+    ws3["A1"] = "加速アラートで買い、減速アラートで売る戦略"
+    ws3["A1"].font = Font(name="Arial", bold=True, size=13)
+    for k, t in enumerate([
+        "加速アラートの翌営業日終値で買い、次の減速アラートの翌営業日終値で売る、を繰り返した場合",
+        "保有中に出た追加の買いシグナルは無視。最後まで売りが出ていない場合は直近終値で評価",
+        "売買コスト・税は未考慮（利確ごとに課税される口座では手取りはさらに減る）",
+    ], 2):
+        ws3.cell(k, 1, "・" + t).font = note_font
+
+    r3 = 6
+    sw_headers = ["資産", "取引数", "勝率", "戦略の累積リターン", "持ちっぱなし", "市場にいた割合"]
+    for j, h in enumerate(sw_headers, 1):
+        cell = ws3.cell(r3, j, h)
+        cell.font = bold
+        cell.fill = hdr_fill
+    for i, row in enumerate(switch_rows, r3 + 1):
+        ws3.cell(i, 1, row["資産"]).font = normal
+        ws3.cell(i, 2, row["取引数"]).font = normal
+        for j, key in enumerate(["勝率", "戦略の累積リターン", "持ちっぱなし", "市場にいた割合"], 3):
+            c = ws3.cell(i, j, row[key] / 100.0)
+            c.number_format = "0%" if key in ("勝率", "市場にいた割合") else "+0.0%;-0.0%;0.0%"
+            c.font = normal
+
+    r3 += len(switch_rows) + 3
+    ws3.cell(r3, 1, "【取引明細】").font = bold
+    r3 += 1
+    tr_cols = ["資産", "買い日", "売り日", "保有営業日", "リターン", "状態"]
+    for j, h in enumerate(tr_cols, 1):
+        cell = ws3.cell(r3, j, h)
+        cell.font = bold
+        cell.fill = hdr_fill
+    for i, (_, row) in enumerate(switch_trades.iterrows(), r3 + 1):
+        for j, c in enumerate(tr_cols, 1):
+            v = row[c]
+            if c == "リターン":
+                cell = ws3.cell(i, j, float(v) / 100.0)
+                cell.number_format = "+0.0%;-0.0%;0.0%"
+            elif c == "保有営業日":
+                cell = ws3.cell(i, j, int(v))
+            else:
+                cell = ws3.cell(i, j, str(v))
+            cell.font = normal
+    for j, w in enumerate([20, 12, 12, 12, 11, 10], 1):
+        ws3.column_dimensions[get_column_letter(j)].width = w
 
     OUT_XLSX.parent.mkdir(parents=True, exist_ok=True)
     wb.save(OUT_XLSX)
