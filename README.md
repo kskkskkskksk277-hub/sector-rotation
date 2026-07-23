@@ -37,14 +37,23 @@
 4. **Actions タブ → update-dashboard → Run workflow** で初回実行
 5. 完了すると `https://<ユーザー名>.github.io/sector-rotation/` で閲覧できる
 
-## ローカルで動かす場合
+## ローカルで動かす場合（PCアプリ版）
+
+**`起動.bat` をダブルクリック**（デスクトップのショートカット「セクターローテーション」からも起動可）。
+データ更新 → ダッシュボード生成 → ブラウザ表示まで自動で行う。
+
+- 4時間以内に取得済みならデータ更新はスキップ（強制更新は `python fetch_data.py --force`）
+- オフラインのときは前回取得したデータで表示される
+- ローカル版はパスワード無し。公開Web版とは独立して動く
+
+手動で個別に実行する場合:
 
 ```
 # .env に JQUANTS_API_KEY=... を書いておく
 pip install -r requirements.txt
 python fetch_data.py
 python build_dashboard.py
-# out/index.html をブラウザで開く（ローカル版はパスワード無し）
+# out/index.html をブラウザで開く
 ```
 
 ## 注意

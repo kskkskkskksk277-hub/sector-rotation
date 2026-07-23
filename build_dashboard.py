@@ -160,11 +160,18 @@ def compute():
     decel_alert = (accel_s < -ath) & (accel_s.shift() >= -ath.shift())
 
     # --- 参考指数（TOPIX・日経平均）: 表示開始日=100として指数化 ---
+    ohlc_cols = ["NK_O", "NK_H", "NK_L", "NIKKEI225"]
     if INDICES.exists():
-        mkt = pd.read_parquet(INDICES).set_index("Date").sort_index()
-        mkt = mkt.reindex(rel.index).ffill()
+        idx_raw = pd.read_parquet(INDICES).set_index("Date").sort_index()
+        mkt = idx_raw[["TOPIX", "NIKKEI225"]].reindex(rel.index).ffill()
+        # ローソク足用の四本値（ffillで偽の足を作らないよう欠損日はそのまま落とす）
+        if set(ohlc_cols) <= set(idx_raw.columns):
+            nk_ohlc = idx_raw[ohlc_cols].dropna()
+        else:
+            nk_ohlc = pd.DataFrame(columns=ohlc_cols)  # 旧データ形式なら非表示
     else:
         mkt = pd.DataFrame(index=rel.index, columns=["TOPIX", "NIKKEI225"], dtype=float)
+        nk_ohlc = pd.DataFrame(columns=ohlc_cols)
 
     # ウォームアップ期間を落とす
     keep = rel.index[WARMUP:]
@@ -189,6 +196,7 @@ def compute():
         if not base.empty:
             mkt[col] = mkt[col] / base.iloc[0] * 100.0
     frames["mkt_idx"] = mkt.round(2)
+    frames["nk_ohlc"] = nk_ohlc[nk_ohlc.index >= keep[0]].round(1)
 
     return frames, series, labels
 
@@ -287,6 +295,20 @@ def build_figs(frames, series, labels):
     f2.update_layout(xaxis=range_buttons(), height=680,
                      yaxis=dict(tickfont=dict(size=10), automargin=False))
 
+    # --- 図1c: 日経平均ローソク足（実際の株価・円） ---
+    nk = frames["nk_ohlc"]
+    f1c = go.Figure()
+    if not nk.empty:
+        f1c.add_trace(go.Candlestick(
+            x=nk.index, open=nk["NK_O"], high=nk["NK_H"], low=nk["NK_L"], close=nk["NIKKEI225"],
+            name="日経平均",
+            increasing=dict(line=dict(color="#d64550", width=1), fillcolor="#d64550"),
+            decreasing=dict(line=dict(color="#3b6fd4", width=1), fillcolor="#3b6fd4")))
+    f1c.update_layout(
+        xaxis={**range_buttons(), "rangeslider": {"visible": False}},
+        yaxis=dict(automargin=False, tickformat=",d"),
+        height=420, showlegend=False)
+
     # 断面図・累積相対強弱の初期表示セクター（直近の相対強弱の動きが大きい10個）
     # 表示切替はHTML側のチェックボックスで行う（凡例は使わない）
     rs = frames["rs"]
@@ -316,13 +338,13 @@ def build_figs(frames, series, labels):
     f3.update_layout(xaxis=range_buttons(), height=470,
                      yaxis=dict(automargin=False))
 
-    for f in (f1, f2, f2b, f3):
+    for f in (f1, f1c, f2, f2b, f3):
         f.update_layout(
             template="plotly_white", font=dict(family="'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif", size=12),
             margin=MARGIN,
             legend=dict(orientation="h", y=-0.12, font=dict(size=10)),
             hoverlabel=dict(font_size=12))
-    return f1, f2, f2b, f3, default_visible
+    return f1, f1c, f2, f2b, f3, default_visible
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -387,6 +409,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </details>
   <div class="card"><h2>ローテーション指数（＋＝リスクオン ／ −＝リスクオフ）</h2>
     <p class="note">細い線は日経平均・TOPIX（右軸・表示中の期間の先頭を100に自動調整）。右上のボタンでまとめて表示/非表示</p>{fig1}</div>
+  <div class="card"><h2>日経平均（ローソク足・円）</h2>
+    <p class="note">赤＝陽線（終値が始値より高い）、青＝陰線。上のローテーション指数と同じ横軸なので、シグナルと値動きを縦に見比べられます</p>{fig1c}</div>
   <div class="card"><h2>資金フロー地形図（赤＝流入・青＝流出）</h2>{fig2}</div>
   <div class="card">
     <h2>表示セクターの選択</h2>
@@ -505,12 +529,12 @@ def main() -> None:
     if not PRICES.exists():
         sys.exit("data/prices.parquet がありません。先に fetch_data.py を実行してください。")
     frames, series, labels = compute()
-    f1, f2, f2b, f3, default_visible = build_figs(frames, series, labels)
+    f1, f1c, f2, f2b, f3, default_visible = build_figs(frames, series, labels)
 
     cfg = {"responsive": True, "displaylogo": False,
            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
     kw = dict(full_html=False, include_plotlyjs=False, config=cfg)
-    parts = [f1.to_html(div_id="figrot", **kw), f2.to_html(**kw),
+    parts = [f1.to_html(div_id="figrot", **kw), f1c.to_html(**kw), f2.to_html(**kw),
              f2b.to_html(div_id="figflow", **kw), f3.to_html(div_id="figrs", **kw)]
 
     # セクター選択チェックボックス（グラフのトレース順と同じ並び）
@@ -524,7 +548,8 @@ def main() -> None:
 
     jst = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)
     html = HTML_TEMPLATE.format(updated=jst.strftime("%Y-%m-%d %H:%M JST"),
-                                fig1=parts[0], fig2=parts[1], fig2b=parts[2], fig3=parts[3],
+                                fig1=parts[0], fig1c=parts[1], fig2=parts[2],
+                                fig2b=parts[3], fig3=parts[4],
                                 sector_checkboxes="\n".join(boxes),
                                 baskets_html=baskets_table_html())
     OUT_DIR.mkdir(exist_ok=True)

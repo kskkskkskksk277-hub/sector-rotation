@@ -105,16 +105,16 @@ def fetch_topix(s: requests.Session, frm: str, to: str) -> pd.DataFrame:
 
 
 def fetch_nikkei225(frm: str, to: str) -> pd.DataFrame:
-    """日経平均: J-Quants Lightプランでは非対応（403）のため yfinance で代替"""
+    """日経平均: J-Quants Lightプランでは非対応（403）のため yfinance で代替。
+    ローソク足表示用に四本値（OHLC）も保存する。"""
     df = yf.download("^N225", start=frm, end=to, progress=False, auto_adjust=False)
     if df.empty:
         log("警告: 日経平均の取得に失敗しました（yfinance）。指数比較チャートから除外します。")
-        return pd.DataFrame(columns=["Date", "NIKKEI225"])
-    close = df["Close"]
-    if hasattr(close, "columns"):
-        close = close.iloc[:, 0]
-    out = close.reset_index()
-    out.columns = ["Date", "NIKKEI225"]
+        return pd.DataFrame(columns=["Date", "NIKKEI225", "NK_O", "NK_H", "NK_L"])
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    out = df[["Open", "High", "Low", "Close"]].reset_index()
+    out.columns = ["Date", "NK_O", "NK_H", "NK_L", "NIKKEI225"]
     out["Date"] = pd.to_datetime(out["Date"]).dt.tz_localize(None)
     return out
 
@@ -133,6 +133,14 @@ def update_indices(frm_dt: dt.date, to_dt: dt.date, key: str) -> None:
 
 
 def main() -> None:
+    # ローカルの連続起動対策: 4時間以内に取得済みならスキップ（--force で強制再取得）。
+    # GitHub Actions では毎回まっさらな環境なので、この分岐には入らず常に取得する。
+    if "--force" not in sys.argv and PRICES.exists() and INDICES.exists():
+        age_h = (dt.datetime.now().timestamp() - PRICES.stat().st_mtime) / 3600
+        if age_h < 4:
+            log(f"{age_h:.1f}時間前に取得済みのためスキップします（強制更新: python fetch_data.py --force）")
+            return
+
     key = load_api_key()
     s = requests.Session()
     s.headers["x-api-key"] = key
