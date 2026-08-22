@@ -29,12 +29,15 @@ LABELS = {
     "food_household":         "食品・生活用品",
     "pharma":                 "医薬品",
     "telecom":                "通信",
-    "transport":              "運輸・物流",
-    "construction_realestate": "建設・不動産・住宅",
+    "land_air_transport":     "陸運・空運",
+    "realestate":             "不動産",
+    "construction":           "建設・住宅",
     "retail":                 "小売",
-    "financials":             "保険・証券・その他金融",
+    "insurance":              "保険",
+    "securities_other":       "証券・その他金融",
     "banks":                  "銀行",
     "trading_houses":         "商社",
+    "shipping":               "海運",
     "energy":                 "資源・エネルギー",
     "chemicals":              "化学・素材",
     "steel_nonferrous":       "鉄鋼・非鉄・電線",
@@ -58,9 +61,9 @@ SECTOR_MAP = {
     "精密機器": "precision_medical",
     "通信": "telecom",
     "銀行": "banks",
-    "その他金融": "financials",
-    "証券": "financials",
-    "保険": "financials",
+    "その他金融": "securities_other",
+    "証券": "securities_other",
+    "保険": "insurance",
     "水産": "food_household",
     "食品": "food_household",
     "小売業": "retail",
@@ -75,15 +78,15 @@ SECTOR_MAP = {
     "鉄鋼": "steel_nonferrous",
     "非鉄・金属": "steel_nonferrous",
     "商社": "trading_houses",
-    "建設": "construction_realestate",
-    "不動産": "construction_realestate",
+    "建設": "construction",
+    "不動産": "realestate",
     "機械": "machinery_fa",
     "造船": "heavy_defense",     # 川崎重工
     "その他製造": "electronics",  # 個別上書きで振り分け
     "鉄道・バス": "infra_defensive",
-    "陸運": "transport",
-    "海運": "transport",
-    "空運": "transport",
+    "陸運": "land_air_transport",
+    "海運": "shipping",
+    "空運": "land_air_transport",
     "電力": "infra_defensive",
     "ガス": "infra_defensive",
 }
@@ -124,7 +127,7 @@ OVERRIDE = {
     # 電子材料
     "6988": "electronics",       # 日東電工（化学から）
     # 住宅設備
-    "5332": "construction_realestate",  # TOTO（窯業から）
+    "5332": "construction",      # TOTO（窯業から）
     # ゲーム・エンタメ（サービス・その他製造から）
     "7974": "games_entertainment",  # 任天堂
     "3659": "games_entertainment",  # ネクソン
@@ -137,7 +140,7 @@ OVERRIDE = {
     # ヘルスケア
     "2413": "pharma",            # エムスリー（医療サービス）
     # 金融
-    "6178": "financials",        # 日本郵政
+    "6178": "securities_other",  # 日本郵政
 }
 
 

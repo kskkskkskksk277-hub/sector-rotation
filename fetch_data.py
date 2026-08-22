@@ -60,11 +60,19 @@ def load_api_key() -> str:
 
 
 def load_codes() -> list[str]:
-    cfg = json.loads((ROOT / "baskets.json").read_text(encoding="utf-8"))
+    """基本層（日経225）＋テーマ層（225外を含む）の全銘柄コード"""
     codes: list[str] = []
+    cfg = json.loads((ROOT / "baskets.json").read_text(encoding="utf-8"))
     for basket in cfg["baskets"].values():
         codes.extend(basket["codes"].keys())
-    # J-Quants は5桁コード（4桁 + 末尾0）
+
+    themes_path = ROOT / "themes.json"
+    if themes_path.exists():
+        tcfg = json.loads(themes_path.read_text(encoding="utf-8"))
+        for theme in tcfg["themes"].values():
+            codes.extend(theme.get("codes", {}).keys())   # 合成テーマには codes が無い
+
+    # J-Quants は5桁コード（4桁 + 末尾0）。英字入りの新形式コードも同じ（285A → 285A0）
     return [c + "0" if len(c) == 4 else c for c in dict.fromkeys(codes)]
 
 

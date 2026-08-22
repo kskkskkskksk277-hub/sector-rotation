@@ -76,6 +76,24 @@ SHORT_LABEL = {
     "精密・医療機器": "精密・医療",
     "電機・電子部品": "電機・部品",
     "鉄鋼・非鉄・電線": "鉄鋼・非鉄",
+    "証券・その他金融": "証券・金融",
+    "光デバイス・高速通信": "光デバイス",
+    "AIソフト・エージェント": "AIソフト",
+    "サイバーセキュリティ": "サイバーセキ",
+    "量子コンピューター": "量子コンピュータ",
+    "フィジカルAI・ロボット": "フィジカルAI",
+    "サーバー冷却・空調": "冷却・空調",
+    "レアアース・都市油田": "レアアース",
+    "再生可能エネルギー": "再エネ",
+    "ペロブスカイト太陽電池": "ペロブスカイト",
+    "金利上昇メリット": "金利上昇メリ",
+    "内需・円高メリット": "内需・円高",
+    "SDV・車載ソフト": "SDV・車載",
+    "バイオテクノロジー": "バイオ",
+    "ディフェンシブ全体": "ディフェンシブ",
+    "半導体部材・部品": "半導体部材",
+    "半導体製造装置": "半導体製造装置",
+    "SaaS・クラウド": "SaaS",
 }
 
 
@@ -116,6 +134,14 @@ def cooldown(mask: pd.Series, days: int = COOLDOWN) -> pd.Series:
     return pd.Series(out, index=mask.index)
 
 
+def load_themes():
+    """テーマ定義。codes を持つものと、基本層を合成する from_baskets 型がある"""
+    path = ROOT / "themes.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))["themes"]
+
+
 def load_baskets():
     cfg = json.loads((ROOT / "baskets.json").read_text(encoding="utf-8"))
     baskets = {name: [c + "0" for c in b["codes"]] for name, b in cfg["baskets"].items()}
@@ -136,6 +162,25 @@ def compute():
     })
     market = basket_ret.mean(axis=1)
     rel = basket_ret.sub(market, axis=0).dropna(how="all")
+
+    # --- テーマ層（表示専用・銘柄が重複してよい。指数計算には一切使わない） ---
+    # 市場平均は基本層のものを流用する。テーマ同士は重複するので独自の平均は取れない。
+    themes = load_themes()
+    theme_meta, theme_ret = {}, {}
+    for key, t in themes.items():
+        if "from_baskets" in t:
+            codes = [c for b in t["from_baskets"] for c in baskets[b]]
+        else:
+            codes = [c + "0" if len(c) == 4 else c for c in t["codes"]]
+        cols = [c for c in codes if c in ret.columns]
+        if not cols:
+            continue
+        theme_meta[key] = {"label": t["label"], "group": t.get("group", "その他"),
+                           "n": len(cols)}
+        theme_ret[key] = ret[cols].mean(axis=1)
+    theme_rel = pd.DataFrame(theme_ret).sub(market, axis=0).reindex(rel.index)
+    theme_rs = theme_rel.cumsum()
+    theme_flow = causal_gaussian(theme_rel.fillna(0), FLOW_SIGMA_T)
 
     rs = rel.cumsum()
     # 片側ガウス平滑（その日までのデータのみ）。過去の値が後から変わらない
@@ -175,7 +220,7 @@ def compute():
 
     # ウォームアップ期間を落とす
     keep = rel.index[WARMUP:]
-    frames = dict(rs=rs, flow=flow)
+    frames = dict(rs=rs, flow=flow, theme_flow=theme_flow, theme_rs=theme_rs)
     series = dict(rot=rot, sigma=sigma,
                   cross_up=cooldown(cross_up), cross_dn=cooldown(cross_dn),
                   plus_break=cooldown(plus_break), minus_break=cooldown(minus_break),
@@ -187,6 +232,9 @@ def compute():
     # HTMLに埋め込むデータ量を減らすため小数を丸める（5年分×21系列対策）
     frames["flow"] = frames["flow"].round(3)
     frames["rs"] = frames["rs"].round(2)
+    frames["theme_rs"] = (frames["theme_rs"] - frames["theme_rs"].iloc[0]).round(2)
+    frames["theme_flow"] = frames["theme_flow"].round(3)
+    frames["theme_meta"] = theme_meta
     series["rot"] = series["rot"].round(3)
     series["sigma"] = series["sigma"].round(3)
 
@@ -338,13 +386,55 @@ def build_figs(frames, series, labels):
     f3.update_layout(xaxis=range_buttons(), height=470,
                      yaxis=dict(automargin=False))
 
-    for f in (f1, f1c, f2, f2b, f3):
+    # --- 図4・5: テーマ層（地形図・断面図）と 図6: テーマ累積相対強弱 ---
+    tflow, trs, tmeta = frames["theme_flow"], frames["theme_rs"], frames["theme_meta"]
+    tcols = list(tflow.columns)
+    tlab = {c: tmeta[c]["label"] for c in tcols}
+
+    # テーマは縦の並びに意味がない（セクターの守り→攻めのような順序が無い）ので、
+    # 隣接行をぼかす等高線ではなく素直なヒートマップで描く。
+    # 表示は themes.json の並び（AI・半導体…）が上から来るよう逆順にする。
+    tdisp = tcols[::-1]
+    tz = np.round(tflow[tdisp].to_numpy().T, 3)
+    tzmax = np.percentile(np.abs(tz), 98)
+    f4 = go.Figure(go.Heatmap(
+        z=tz, x=tflow.index, y=[short(tlab[c]) for c in tdisp],
+        colorscale="RdBu", reversescale=True, zmid=0, zmin=-tzmax, zmax=tzmax,
+        zsmooth="best",
+        colorbar=dict(title=dict(text="流入<br>↑<br>↓<br>流出", font=dict(size=10)),
+                      thickness=10, x=1.0, xanchor="left", tickfont=dict(size=9)),
+        hovertemplate="%{y}<br>%{x|%Y-%m-%d}<br>フロー: %{z:.3f} %/日<extra></extra>"))
+    f4.update_layout(xaxis=range_buttons(), height=760,
+                     yaxis=dict(tickfont=dict(size=10), automargin=False))
+
+    t_default = set(trs.iloc[-1].abs().sort_values(ascending=False).index[:8])
+    f5 = go.Figure()
+    f5.add_hline(y=0, line=dict(color="#9aa0a6", width=1))
+    for i, col in enumerate(tcols):
+        f5.add_trace(go.Scatter(
+            x=tflow.index, y=tflow[col], name=tlab[col],
+            line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+            visible=col in t_default, showlegend=False,
+            hovertemplate=tlab[col] + "<br>%{x|%Y-%m-%d}<br>フロー: %{y:.3f} %/日<extra></extra>"))
+    f5.update_layout(xaxis=range_buttons(), height=440, yaxis=dict(automargin=False))
+
+    f6 = go.Figure()
+    f6.add_hline(y=0, line=dict(color="#9aa0a6", width=1))
+    for i, col in enumerate(tcols):
+        f6.add_trace(go.Scatter(
+            x=trs.index, y=trs[col], name=tlab[col],
+            line=dict(color=PALETTE[i % len(PALETTE)], width=2),
+            visible=col in t_default, showlegend=False,
+            hovertemplate=tlab[col] + "<br>%{x|%Y-%m-%d}<br>市場比: %{y:.1f}%<extra></extra>"))
+    f6.update_layout(xaxis=range_buttons(), height=470, yaxis=dict(automargin=False))
+
+    for f in (f1, f1c, f2, f2b, f3, f4, f5, f6):
         f.update_layout(
             template="plotly_white", font=dict(family="'Helvetica Neue',Arial,'Hiragino Sans','Yu Gothic',sans-serif", size=12),
             margin=MARGIN,
             legend=dict(orientation="h", y=-0.12, font=dict(size=10)),
             hoverlabel=dict(font_size=12))
-    return f1, f1c, f2, f2b, f3, default_visible
+    return f1, f1c, f2, f2b, f3, f4, f5, f6, default_visible, t_default
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -403,6 +493,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <li><b>資金フロー地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）の強さ。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
       <li><b>資金フロー断面図</b>: 地形図を横から見た図。各線は地形図の1行と同じデータで、線がプラス圏＝流入（地形図の赤）、マイナス圏＝流出（青）に対応します。</li>
       <li><b>累積相対強弱</b>: 「市場平均」（全21バスケットの平均リターン）に対する超過リターンの積み上げ。<b>グラフ左端（表示開始日）を0%</b>として、そこから市場にどれだけ勝った/負けたかを表します。右肩上がり＝市場より強い。資金フロー（地形図・断面図）はこのグラフの「傾き」にあたり、3つのグラフは同じ計算のつながりで対応しています。</li>
+      <li><b>投資テーマ</b>（ページ下部）: みんかぶ・株探の人気テーマを参考にした分類。セクターと違い<b>銘柄が重複してよく、日経225以外の銘柄も含みます</b>（SaaS・外食など）。テーマはローテーション指数や市場平均の計算には一切使わない表示専用です。</li>
       <li><b>シグナルは一度出たら動きません</b>: 平滑化にその日までのデータしか使わない計算方式のため、後日データが増えても過去のシグナル位置は変わりません（2026-07-18に変更。それ以前は前後の日を平均する方式で、表示済みのシグナルが後から移動していました）。代わりに反応は数日遅れます。</li>
       <li>数値はすべて株価から計算した加工済みの独自指標です。投資判断はご自身の責任で行ってください。</li>
     </ul>
@@ -425,9 +516,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <p class="note">各線＝地形図の1行。プラス圏＝流入、マイナス圏＝流出</p>{fig2b}</div>
   <div class="card"><h2>累積相対強弱（市場平均比・表示開始日=0%）</h2>
     <p class="note">右肩上がり＝市場平均より強い</p>{fig3}</div>
+  <h2 style="margin:26px 0 4px">投資テーマ（みんかぶ・株探の人気テーマより）</h2>
+  <p class="note" style="margin:0 0 10px">
+    セクターと違い銘柄が重複し、日経225以外の銘柄も含みます。上のローテーション指数の計算には使っていません</p>
+  <div class="card">
+    <h2>表示テーマの選択</h2>
+    <p class="note">下2つのグラフに反映されます。初期表示は直近の動きが大きい8テーマ</p>
+    <div class="selbtns">
+      <button type="button" onclick="allThemes(true)">全て表示</button>
+      <button type="button" onclick="allThemes(false)">全て非表示</button>
+    </div>
+    <div class="selgrid" id="thgrid">{theme_checkboxes}</div>
+  </div>
+  <div class="card"><h2>テーマ別 資金フロー地形図</h2>{fig4}</div>
+  <div class="card"><h2>テーマ別 資金フロー断面図（%/日）</h2>{fig5}</div>
+  <div class="card"><h2>テーマ別 累積相対強弱（市場平均比・表示開始日=0%）</h2>{fig6}</div>
   <details>
     <summary>各セクターの採用銘柄一覧</summary>
     {baskets_html}
+  </details>
+  <details>
+    <summary>各テーマの採用銘柄一覧</summary>
+    {themes_html}
   </details>
 </div>
 <script>
@@ -507,6 +617,20 @@ function allSectors(on) {{
   const idx = Array.from(boxes, cb => Number(cb.dataset.i));
   selFigs().forEach(gd => Plotly.restyle(gd, {{visible: on}}, idx));
 }}
+// --- テーマ層の表示切替（断面図と累積相対強弱に反映） ---
+function themeFigs() {{
+  return [document.getElementById("figtflow"), document.getElementById("figtrs")];
+}}
+function oneTheme(cb) {{
+  const i = Number(cb.dataset.i);
+  themeFigs().forEach(gd => Plotly.restyle(gd, {{visible: cb.checked}}, [i]));
+}}
+function allThemes(on) {{
+  const boxes = document.querySelectorAll("#thgrid input");
+  boxes.forEach(cb => {{ cb.checked = on; }});
+  const idx = Array.from(boxes, cb => Number(cb.dataset.i));
+  themeFigs().forEach(gd => Plotly.restyle(gd, {{visible: on}}, idx));
+}}
 </script>
 </body>
 </html>
@@ -525,33 +649,66 @@ def baskets_table_html() -> str:
     return "\n".join(parts)
 
 
+def themes_table_html(theme_meta) -> str:
+    """テーマ別の採用銘柄一覧（銘柄名・コードのみ＝公開情報）"""
+    cfg = json.loads((ROOT / "themes.json").read_text(encoding="utf-8"))
+    bk = json.loads((ROOT / "baskets.json").read_text(encoding="utf-8"))
+    parts, cur_group = [], None
+    for key, t in cfg["themes"].items():
+        if key not in theme_meta:
+            continue
+        group = t.get("group", "その他")
+        if group != cur_group:
+            cur_group = group
+            parts.append(f'<p style="margin:12px 0 2px;color:#6b7280">― {group} ―</p>')
+        if "from_baskets" in t:
+            names = "、".join(bk["baskets"][b]["label"] for b in t["from_baskets"])
+            body = f'（基本層の合成: {names}）'
+        else:
+            body = "、".join(f"{co}({code})" for code, co in t["codes"].items())
+        parts.append(f'<p style="margin:6px 0"><b>{t["label"]}</b>'
+                     f'<span style="color:#6b7280">（{theme_meta[key]["n"]}銘柄）</span><br>{body}</p>')
+    return "\n".join(parts)
+
+
 def main() -> None:
     if not PRICES.exists():
         sys.exit("data/prices.parquet がありません。先に fetch_data.py を実行してください。")
     frames, series, labels = compute()
-    f1, f1c, f2, f2b, f3, default_visible = build_figs(frames, series, labels)
+    (f1, f1c, f2, f2b, f3, f4, f5, f6,
+     default_visible, t_default) = build_figs(frames, series, labels)
 
     cfg = {"responsive": True, "displaylogo": False,
            "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"]}
     kw = dict(full_html=False, include_plotlyjs=False, config=cfg)
     parts = [f1.to_html(div_id="figrot", **kw), f1c.to_html(**kw), f2.to_html(**kw),
-             f2b.to_html(div_id="figflow", **kw), f3.to_html(div_id="figrs", **kw)]
+             f2b.to_html(div_id="figflow", **kw), f3.to_html(div_id="figrs", **kw),
+             f4.to_html(**kw), f5.to_html(div_id="figtflow", **kw),
+             f6.to_html(div_id="figtrs", **kw)]
 
-    # セクター選択チェックボックス（グラフのトレース順と同じ並び）
-    boxes = []
-    for i, col in enumerate(frames["flow"].columns):
-        checked = " checked" if col in default_visible else ""
-        boxes.append(
-            f'<label><input type="checkbox" data-i="{i}"{checked} onchange="oneSector(this)">'
-            f'<span class="chip" style="background:{PALETTE[i % len(PALETTE)]}"></span>'
-            f'{labels[col]}</label>')
+    def checkboxes(cols, label_of, visible, handler):
+        """グラフのトレース順と同じ並びのチェックボックス群"""
+        out = []
+        for i, col in enumerate(cols):
+            checked = " checked" if col in visible else ""
+            out.append(
+                f'<label><input type="checkbox" data-i="{i}"{checked} onchange="{handler}(this)">'
+                f'<span class="chip" style="background:{PALETTE[i % len(PALETTE)]}"></span>'
+                f'{label_of(col)}</label>')
+        return "\n".join(out)
 
+    tmeta = frames["theme_meta"]
     jst = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)
-    html = HTML_TEMPLATE.format(updated=jst.strftime("%Y-%m-%d %H:%M JST"),
-                                fig1=parts[0], fig1c=parts[1], fig2=parts[2],
-                                fig2b=parts[3], fig3=parts[4],
-                                sector_checkboxes="\n".join(boxes),
-                                baskets_html=baskets_table_html())
+    html = HTML_TEMPLATE.format(
+        updated=jst.strftime("%Y-%m-%d %H:%M JST"),
+        fig1=parts[0], fig1c=parts[1], fig2=parts[2], fig2b=parts[3], fig3=parts[4],
+        fig4=parts[5], fig5=parts[6], fig6=parts[7],
+        sector_checkboxes=checkboxes(frames["flow"].columns, lambda c: labels[c],
+                                     default_visible, "oneSector"),
+        theme_checkboxes=checkboxes(frames["theme_flow"].columns,
+                                    lambda c: tmeta[c]["label"], t_default, "oneTheme"),
+        baskets_html=baskets_table_html(),
+        themes_html=themes_table_html(tmeta))
     OUT_DIR.mkdir(exist_ok=True)
     (OUT_DIR / "index.html").write_text(html, encoding="utf-8")
     print(f"出力完了: {OUT_DIR / 'index.html'}（データ最終日: {series['rot'].index[-1]:%Y-%m-%d}）")
