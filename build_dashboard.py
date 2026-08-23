@@ -378,8 +378,10 @@ def build_figs(frames, series, labels):
     f3 = go.Figure()
     f3.add_hline(y=0, line=dict(color="#9aa0a6", width=1))
     for i, col in enumerate(rs.columns):
+        # y を明示的に list にする。numpy 配列のままだと plotly が base64 で
+        # 埋め込むため、期間に応じて起点を0%に振り直すJS側から読めなくなる。
         f3.add_trace(go.Scatter(
-            x=rs.index, y=rs[col], name=labels[col],
+            x=rs.index, y=rs[col].tolist(), name=labels[col],
             line=dict(color=PALETTE[i % len(PALETTE)], width=2),
             visible=col in default_visible, showlegend=False,
             hovertemplate=labels[col] + "<br>%{x|%Y-%m-%d}<br>市場比: %{y:.1f}%<extra></extra>"))
@@ -391,16 +393,21 @@ def build_figs(frames, series, labels):
     tcols = list(tflow.columns)
     tlab = {c: tmeta[c]["label"] for c in tcols}
 
-    # テーマは縦の並びに意味がない（セクターの守り→攻めのような順序が無い）ので、
-    # 隣接行をぼかす等高線ではなく素直なヒートマップで描く。
     # 表示は themes.json の並び（AI・半導体…）が上から来るよう逆順にする。
+    # テーマは縦の並びに意味が薄いので行方向のぼかしはセクターより弱くし、
+    # 等高線の本数は明示指定する（自動だとテーマは値のばらつきが大きく線が過密になる）。
     tdisp = tcols[::-1]
-    tz = np.round(tflow[tdisp].to_numpy().T, 3)
+    # 時間方向にも軽くぼかす。テーマは構成銘柄が少ないものがあり値の振れが大きいため、
+    # 全期間表示で等高線が過密になるのを抑える（表示用のみ。数値そのものは変えない）
+    tz = np.round(gaussian_filter(tflow[tdisp].to_numpy().T,
+                                  sigma=(HEAT_SIGMA_B * 0.6, 3), mode="nearest"), 3)
     tzmax = np.percentile(np.abs(tz), 98)
-    f4 = go.Figure(go.Heatmap(
+    f4 = go.Figure(go.Contour(
         z=tz, x=tflow.index, y=[short(tlab[c]) for c in tdisp],
-        colorscale="RdBu", reversescale=True, zmid=0, zmin=-tzmax, zmax=tzmax,
-        zsmooth="best",
+        colorscale="RdBu", reversescale=True, zmid=0,
+        line=dict(color="rgba(30,34,45,0.5)", width=1),
+        contours=dict(coloring="heatmap", showlines=True,
+                      start=-tzmax, end=tzmax, size=round(tzmax / 6, 4)),
         colorbar=dict(title=dict(text="流入<br>↑<br>↓<br>流出", font=dict(size=10)),
                       thickness=10, x=1.0, xanchor="left", tickfont=dict(size=9)),
         hovertemplate="%{y}<br>%{x|%Y-%m-%d}<br>フロー: %{z:.3f} %/日<extra></extra>"))
@@ -422,7 +429,7 @@ def build_figs(frames, series, labels):
     f6.add_hline(y=0, line=dict(color="#9aa0a6", width=1))
     for i, col in enumerate(tcols):
         f6.add_trace(go.Scatter(
-            x=trs.index, y=trs[col], name=tlab[col],
+            x=trs.index, y=trs[col].tolist(), name=tlab[col],
             line=dict(color=PALETTE[i % len(PALETTE)], width=2),
             visible=col in t_default, showlegend=False,
             hovertemplate=tlab[col] + "<br>%{x|%Y-%m-%d}<br>市場比: %{y:.1f}%<extra></extra>"))
@@ -492,7 +499,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <li><b>日経平均・TOPIX（右軸）</b>: 実際の相場の値動き。3M/6M/1Y/Allを切り替えると、表示中の期間の先頭が100になるよう自動で振り直されます（その期間で何%動いたかがそのまま読めます）。ローテーション指数がプラスなのに相場が下げている、といったズレを確認できます。右上のボタンでまとめて表示/非表示を切り替えられます。</li>
       <li><b>資金フロー地形図</b>: 各バスケットへの資金の流入（赤）・流出（青）の強さ。縦に見ると「今どこが買われているか」、横に見ると「そのテーマがいつから続いているか」。</li>
       <li><b>資金フロー断面図</b>: 地形図を横から見た図。各線は地形図の1行と同じデータで、線がプラス圏＝流入（地形図の赤）、マイナス圏＝流出（青）に対応します。</li>
-      <li><b>累積相対強弱</b>: 「市場平均」（全21バスケットの平均リターン）に対する超過リターンの積み上げ。<b>グラフ左端（表示開始日）を0%</b>として、そこから市場にどれだけ勝った/負けたかを表します。右肩上がり＝市場より強い。資金フロー（地形図・断面図）はこのグラフの「傾き」にあたり、3つのグラフは同じ計算のつながりで対応しています。</li>
+      <li><b>累積相対強弱</b>: 「市場平均」（全24セクターの平均リターン）に対する超過リターンの積み上げ。<b>表示中の期間の先頭を0%</b>として、そこから市場にどれだけ勝った/負けたかを表します（3M/6M/1Y/Allを切り替えると起点も自動で切り替わります）。右肩上がり＝市場より強い。資金フロー（地形図・断面図）はこのグラフの「傾き」にあたり、3つのグラフは同じ計算のつながりで対応しています。</li>
       <li><b>投資テーマ</b>（ページ下部）: みんかぶ・株探の人気テーマを参考にした分類。セクターと違い<b>銘柄が重複してよく、日経225以外の銘柄も含みます</b>（SaaS・外食など）。テーマはローテーション指数や市場平均の計算には一切使わない表示専用です。</li>
       <li><b>シグナルは一度出たら動きません</b>: 平滑化にその日までのデータしか使わない計算方式のため、後日データが増えても過去のシグナル位置は変わりません（2026-07-18に変更。それ以前は前後の日を平均する方式で、表示済みのシグナルが後から移動していました）。代わりに反応は数日遅れます。</li>
       <li>数値はすべて株価から計算した加工済みの独自指標です。投資判断はご自身の責任で行ってください。</li>
@@ -514,8 +521,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
   <div class="card"><h2>資金フロー断面図（地形図を横から見た図・%/日）</h2>
     <p class="note">各線＝地形図の1行。プラス圏＝流入、マイナス圏＝流出</p>{fig2b}</div>
-  <div class="card"><h2>累積相対強弱（市場平均比・表示開始日=0%）</h2>
-    <p class="note">右肩上がり＝市場平均より強い</p>{fig3}</div>
+  <div class="card"><h2>累積相対強弱（市場平均比）</h2>
+    <p class="note">右肩上がり＝市場平均より強い。期間を切り替えると、その期間の先頭が0%になるよう自動で振り直されます</p>{fig3}</div>
   <h2 style="margin:26px 0 4px">投資テーマ（みんかぶ・株探の人気テーマより）</h2>
   <p class="note" style="margin:0 0 10px">
     セクターと違い銘柄が重複し、日経225以外の銘柄も含みます。上のローテーション指数の計算には使っていません</p>
@@ -530,7 +537,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
   <div class="card"><h2>テーマ別 資金フロー地形図</h2>{fig4}</div>
   <div class="card"><h2>テーマ別 資金フロー断面図（%/日）</h2>{fig5}</div>
-  <div class="card"><h2>テーマ別 累積相対強弱（市場平均比・表示開始日=0%）</h2>{fig6}</div>
+  <div class="card"><h2>テーマ別 累積相対強弱（市場平均比）</h2>
+    <p class="note">期間を切り替えると、その期間の先頭が0%になるよう自動で振り直されます</p>{fig6}</div>
   <details>
     <summary>各セクターの採用銘柄一覧</summary>
     {baskets_html}
@@ -541,68 +549,99 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </details>
 </div>
 <script>
-// --- 日経平均・TOPIXを「表示中の期間の先頭=100」に振り直す ---
-// 期間ボタンやズームは横軸を変えるだけなので、右軸の指数はJS側で基準を取り直す。
-// 元データ（全期間先頭=100の系列）を保持し、毎回そこから再計算する。
-var IDX = null;
-function initIdx() {{
-  var gd = document.getElementById("figrot");
-  if (!gd || !gd.data) return false;
-  IDX = {{gd: gd, traces: [], y: [], t: []}};
+// --- 期間に合わせて基準を振り直す ---
+// 期間ボタンやズームは横軸を変えるだけなので、表示中の期間の先頭が
+//   ・日経平均/TOPIX（右軸） → 100
+//   ・累積相対強弱（セクター・テーマ）→ 0%
+// になるようJS側で毎回計算し直す。
+// 注意: StatiCrypt はパスワード入力後にページ内容を差し込むため load イベントは
+// すでに終わっている。load を待たずポーリングで初期化すること。
+function pt(v) {{ return typeof v === "number" ? v : new Date(v).getTime(); }}
+
+function grabRaw(gd, filter) {{
+  // plotly は数値配列を base64 で埋め込むことがあるので _inputArray も見る
+  var st = {{gd: gd, traces: [], y: [], t: [], clamping: false}};
   gd.data.forEach(function (tr, i) {{
-    if (tr.yaxis !== "y2" || !tr.y || typeof tr.y.length !== "number") return;
-    IDX.traces.push(i);
-    IDX.y.push(Array.prototype.slice.call(tr.y));
-    IDX.t.push(Array.prototype.map.call(tr.x, function (d) {{
+    if (!filter(tr)) return;
+    var y = tr.y;
+    if (y && !Array.isArray(y)) y = y._inputArray || y;
+    if (!y || typeof y.length !== "number" || !y.length) return;
+    st.traces.push(i);
+    st.y.push(Array.prototype.slice.call(y));
+    st.t.push(Array.prototype.map.call(tr.x, function (d) {{
       return new Date(d).getTime();
     }}));
   }});
-  if (!IDX.traces.length) return false;
-  var flat = [].concat.apply([], IDX.t);
-  IDX.tmin = Math.min.apply(null, flat);
-  IDX.tmax = Math.max.apply(null, flat);
-  return true;
+  if (!st.traces.length) return null;
+  var flat = [].concat.apply([], st.t);
+  st.tmin = Math.min.apply(null, flat);
+  st.tmax = Math.max.apply(null, flat);
+  return st;
 }}
-function pt(v) {{ return typeof v === "number" ? v : new Date(v).getTime(); }}
 
 // 期間ボタンは横軸の右端から遡って範囲を決めるため、右端がデータ最終日より
 // 未来にあると表示がずれる（3Mだと中身が空になる）。はみ出しを検出したら
 // データ最終日で終わるよう同じ幅で引き戻す。
-var CLAMPING = false;
-function clampX() {{
-  if (!IDX || CLAMPING) return false;
-  var xa = IDX.gd.layout.xaxis;
+function clampX(st, after) {{
+  if (st.clamping) return false;
+  var xa = st.gd.layout.xaxis;
   if (!xa || !xa.range) return false;
   var lo = pt(xa.range[0]), hi = pt(xa.range[1]);
-  if (hi <= IDX.tmax + 864e5) return false;
-  var nlo = Math.max(IDX.tmin, IDX.tmax - (hi - lo));
-  CLAMPING = true;
-  Plotly.relayout(IDX.gd, {{"xaxis.range": [new Date(nlo).toISOString(),
-                                           new Date(IDX.tmax).toISOString()]}})
-        .then(function () {{ CLAMPING = false; rebaseIdx(); }});
+  if (hi <= st.tmax + 864e5) return false;
+  var nlo = Math.max(st.tmin, st.tmax - (hi - lo));
+  st.clamping = true;
+  Plotly.relayout(st.gd, {{"xaxis.range": [new Date(nlo).toISOString(),
+                                          new Date(st.tmax).toISOString()]}})
+        .then(function () {{ st.clamping = false; after(); }});
   return true;
 }}
 
-function rebaseIdx() {{
-  if (!IDX) return;
-  var xa = IDX.gd.layout.xaxis, lo = -Infinity, hi = Infinity;
-  if (xa && xa.range) {{ lo = pt(xa.range[0]); hi = pt(xa.range[1]); }}
-  var ys = IDX.y.map(function (raw, k) {{
-    var ts = IDX.t[k], base = null;
-    return raw.map(function (v, i) {{
-      // 表示範囲外は null にして、右軸が表示中のデータだけに合わせて自動調整されるようにする
-      if (v == null || ts[i] < lo || ts[i] > hi) return null;
-      if (base === null) base = v;
-      return Math.round(v / base * 1000) / 10;
+function makeRebase(st, mode) {{
+  return function () {{
+    var xa = st.gd.layout.xaxis, lo = -Infinity, hi = Infinity;
+    if (xa && xa.range) {{ lo = pt(xa.range[0]); hi = pt(xa.range[1]); }}
+    var ys = st.y.map(function (raw, k) {{
+      var ts = st.t[k], base = null;
+      return raw.map(function (v, i) {{
+        // 表示範囲外は null にして、縦軸が表示中のデータに合わせて自動調整されるようにする
+        if (v == null || isNaN(v) || ts[i] < lo || ts[i] > hi) return null;
+        if (base === null) base = v;
+        return mode === "index"
+          ? Math.round(v / base * 1000) / 10       // 先頭=100
+          : Math.round((v - base) * 100) / 100;    // 先頭=0%
+      }});
     }});
-  }});
-  Plotly.restyle(IDX.gd, {{y: ys}}, IDX.traces);
+    Plotly.restyle(st.gd, {{y: ys}}, st.traces);
+  }};
 }}
-window.addEventListener("load", function () {{
-  if (!initIdx()) return;
-  rebaseIdx();
-  IDX.gd.on("plotly_relayout", function () {{ if (!clampX()) rebaseIdx(); }});
-}});
+
+function setupRebase(id, filter, mode) {{
+  var gd = document.getElementById(id);
+  if (!gd || !gd.data) return false;
+  var st = grabRaw(gd, filter);
+  if (!st) return false;
+  var fn = makeRebase(st, mode);
+  fn();
+  gd.on("plotly_relayout", function () {{ if (!clampX(st, fn)) fn(); }});
+  return true;
+}}
+
+(function initRebase(tries) {{
+  var targets = [
+    ["figrot", function (t) {{ return t.yaxis === "y2"; }}, "index"],
+    ["figrs",  function (t) {{ return true; }}, "zero"],
+    ["figtrs", function (t) {{ return true; }}, "zero"]
+  ];
+  var ready = targets.every(function (a) {{
+    var g = document.getElementById(a[0]);
+    return g && g.data && g.data.length;
+  }});
+  if (!ready) {{
+    if (tries < 150) setTimeout(function () {{ initRebase(tries + 1); }}, 200);
+    return;
+  }}
+  targets.forEach(function (a) {{ setupRebase(a[0], a[1], a[2]); }});
+}})(0);
 
 function selFigs() {{
   return [document.getElementById("figflow"), document.getElementById("figrs")];
