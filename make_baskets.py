@@ -40,7 +40,8 @@ LABELS = {
     "shipping":               "海運",
     "energy":                 "資源・エネルギー",
     "chemicals":              "化学・素材",
-    "steel_nonferrous":       "鉄鋼・非鉄・電線",
+    "steel_nonferrous":       "鉄鋼・非鉄金属",
+    "electric_wire":          "電線",
     "auto":                   "自動車",
     "internet_services":      "ネット・ITサービス",
     "games_entertainment":    "ゲーム・エンタメ",
@@ -105,6 +106,10 @@ OVERRIDE = {
     "4062": "semiconductor_ai",  # イビデン
     "3436": "semiconductor_ai",  # SUMCO（非鉄から・シリコンウエハ）
     "6963": "semiconductor_ai",  # ローム（パワー半導体）
+    # 電線（AI・データセンター向け需要で非鉄金属とは別の動きをするため独立）
+    "5801": "electric_wire",     # 古河電工
+    "5802": "electric_wire",     # 住友電工
+    "5803": "electric_wire",     # フジクラ
     "9984": "semiconductor_ai",  # ソフトバンクG（AI投資会社）
     # 機械・FA・ロボット（電気機器のFA勢を移動）
     "6954": "machinery_fa",      # ファナック
