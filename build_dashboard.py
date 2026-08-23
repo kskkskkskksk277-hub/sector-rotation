@@ -63,12 +63,6 @@ PALETTE = ["#2a78d6", "#e34948", "#008300", "#eda100", "#4a3aa7", "#1baf7a",
 # 全グラフ共通の余白（固定値にすることで横軸の位置を完全に揃える）
 MARGIN = dict(l=84, r=70, t=45, b=10)
 
-# 断面図・累積相対強弱で最初からチェックを入れておくセクター
-DEFAULT_SECTORS = {
-    "電力・ガス・鉄道", "不動産", "銀行", "保険", "建設・住宅", "海運",
-    "資源・エネルギー", "商社", "半導体・AI", "ゲーム・エンタメ", "ネット・ITサービス",
-}
-
 # 地形図の縦軸用の短縮ラベル（左余白84pxに収める）
 SHORT_LABEL = {
     "電力・ガス・鉄道": "電力ガス鉄道",
@@ -363,9 +357,10 @@ def build_figs(frames, series, labels):
         yaxis=dict(automargin=False, tickformat=",d"),
         height=420, showlegend=False)
 
-    # 断面図・累積相対強弱の初期表示セクター（表示切替はHTML側のチェックボックス）
+    # 断面図・累積相対強弱の初期表示セクター（直近の相対強弱の動きが大きい10個）
+    # 表示切替はHTML側のチェックボックスで行う（凡例は使わない）
     rs = frames["rs"]
-    default_visible = {c for c in rs.columns if labels[c] in DEFAULT_SECTORS}
+    default_visible = set(rs.iloc[-1].abs().sort_values(ascending=False).index[:10])
 
     # --- 図2b: 資金フロー断面（地形図の各行を折れ線で抽出） ---
     f2b = go.Figure()
@@ -517,7 +512,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="card"><h2>資金フロー地形図（赤＝流入・青＝流出）</h2>{fig2}</div>
   <div class="card">
     <h2>表示セクターの選択</h2>
-    <p class="note">下2つのグラフ（断面図・累積相対強弱）に反映されます</p>
+    <p class="note">下2つのグラフ（断面図・累積相対強弱）に反映されます。初期表示は直近の動きが大きい10セクター</p>
     <div class="selbtns">
       <button type="button" onclick="allSectors(true)">全て表示</button>
       <button type="button" onclick="allSectors(false)">全て非表示</button>
