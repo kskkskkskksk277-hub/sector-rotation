@@ -5,6 +5,11 @@ on:
     # 平日 20:30 JST (= 11:30 UTC) に実行。J-Quantsの当日データ配信後。
     - cron: "30 11 * * 1-5"
   workflow_dispatch:
+    inputs:
+      test_notify:
+        description: "Discord にテスト送信する"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,6 +44,12 @@ jobs:
 
       - name: Build dashboard
         run: python build_dashboard.py
+
+      - name: Notify Discord (rotation index < -0.5)
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python notify_discord.py ${{ inputs.test_notify && '--test' || '' }}
 
       - name: Encrypt page with password (StatiCrypt)
         env:
